@@ -194,7 +194,7 @@ function submitPwd() {
     return
   }
 
-  if (form.password.length < 6) {
+  if (form.password.length < 12 || form.password.length > 128) {
     ElMessage({
       message: t('pwdLengthMsg'),
       type: 'error',

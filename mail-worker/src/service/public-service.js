@@ -14,6 +14,7 @@ import { isDel, roleConst } from '../const/entity-const';
 import email from '../entity/email';
 import userService from './user-service';
 import KvConst from '../const/kv-const';
+import { validNewPassword } from '../utils/crypto-utils';
 
 const publicService = {
 
@@ -45,6 +46,9 @@ const publicService = {
 
 		size = Number(size);
 		num = Number(num);
+		if (!Number.isInteger(size) || size < 1 || size > 100 || !Number.isSafeInteger(num) || num < 1) {
+			throw new BizError('Invalid pagination', 400);
+		}
 
 		num = (num - 1) * size;
 
@@ -96,16 +100,20 @@ const publicService = {
 
 	async addUser(c, params) {
 		const { list } = params;
+		if (!Array.isArray(list) || list.length > 100) throw new BizError('Invalid user batch', 400);
 
 		if (list.length === 0) return;
 
 		for (const emailRow of list) {
-			if (!verifyUtils.isEmail(emailRow.email)) {
+			if (typeof emailRow?.email !== 'string' || emailRow.email.length > 254 || !verifyUtils.isEmail(emailRow.email)) {
 				throw new BizError(t('notEmail'));
 			}
 
 			if (!c.env.domain.includes(emailUtils.getDomain(emailRow.email))) {
 				throw new BizError(t('notEmailDomain'));
+			}
+			if (emailRow.password !== undefined && !validNewPassword(emailRow.password)) {
+				throw new BizError(t('pwdMinLength'), 400);
 			}
 
 			const { salt, hash } = await saltHashUtils.hashPassword(
@@ -123,6 +131,7 @@ const publicService = {
 
 		const roleList = await roleService.roleSelectUse(c);
 		const defRole = roleList.find(roleRow => roleRow.isDefault === roleConst.isDefault.OPEN);
+		if (!defRole) throw new BizError('Default role is not configured', 400);
 
 		const userList = [];
 
@@ -136,22 +145,21 @@ const publicService = {
 			}
 
 			const userSql = `INSERT INTO user (email, password, salt, type, os, browser, active_ip, create_ip, device, active_time, create_time)
-			VALUES ('${email}', '${hash}', '${salt}', '${type}', '${os}', '${browser}', '${activeIp}', '${activeIp}', '${device}', '${activeTime}', '${activeTime}')`
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 			const accountSql = `INSERT INTO account (email, name, user_id)
-			VALUES ('${email}', '${emailUtils.getName(email)}', 0);`;
+			VALUES (?, ?, (SELECT user_id FROM user WHERE email = ?));`;
 
-			userList.push(c.env.db.prepare(userSql));
-			userList.push(c.env.db.prepare(accountSql));
+			userList.push(c.env.db.prepare(userSql).bind(email, hash, salt, type, os, browser, activeIp, activeIp, device, activeTime, activeTime));
+			userList.push(c.env.db.prepare(accountSql).bind(email, emailUtils.getName(email), email));
 
 		}
 
-		userList.push(c.env.db.prepare(`UPDATE account SET user_id = (SELECT user_id FROM user WHERE user.email = account.email) WHERE user_id = 0;`))
 
 		try {
 			await c.env.db.batch(userList);
 		} catch (e) {
-			if(e.message.includes('SQLITE_CONSTRAINT')) {
+			if(e.message?.includes('SQLITE_CONSTRAINT')) {
 				throw new BizError(t('emailExistDatabase'))
 			} else {
 				throw e
@@ -177,16 +185,12 @@ const publicService = {
 
 		const userRow = await userService.selectByEmailIncludeDel(c, email);
 
-		if (email !== c.env.admin) {
-			throw new BizError(t('notAdmin'));
-		}
-
-		if (!userRow || userRow.isDel === isDel.DELETE) {
-			throw new BizError(t('notExistUser'));
+		if (email !== c.env.admin || !userRow || userRow.isDel === isDel.DELETE) {
+			throw new BizError('Invalid email or password', 401);
 		}
 
 		if (!await cryptoUtils.verifyPassword(password, userRow.salt, userRow.password)) {
-			throw new BizError(t('IncorrectPwd'));
+			throw new BizError('Invalid email or password', 401);
 		}
 	}
 

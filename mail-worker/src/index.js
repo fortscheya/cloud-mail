@@ -3,7 +3,6 @@ import { email } from './email/email';
 import userService from './service/user-service';
 import verifyRecordService from './service/verify-record-service';
 import emailService from './service/email-service';
-import r2Service from './service/r2-service';
 import oauthService from './service/oauth-service';
 import analysisService from './service/analysis-service';
 export default {
@@ -18,14 +17,12 @@ export default {
 		}
 
 		if (url.pathname.startsWith('/oss/')) {
-			const key = url.pathname.slice('/oss/'.length);
-			const resp = await r2Service.toObjResp({ env }, key);
-			return resp || new Response('Not Found', { status: 404 });
+			return app.fetch(req, env, ctx);
 		}
 
 		 if (['/static/','/attachments/'].some(p => url.pathname.startsWith(p))) {
-			 const resp = await r2Service.toObjResp({ env }, url.pathname.substring(1));
-			 return resp || new Response('Not Found', { status: 404 });
+			 url.pathname = '/oss' + url.pathname;
+			 return app.fetch(new Request(url, req), env, ctx);
 		 }
 
 		return env.assets.fetch(req);

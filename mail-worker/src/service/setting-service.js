@@ -11,14 +11,26 @@ import verifyRecordService from './verify-record-service';
 import userContext from '../security/user-context';
 import domainUtils from '../utils/domain-uitls';
 
+function resendSecrets(c) {
+	if (!c.env.RESEND_TOKENS) return {};
+	try {
+		const tokens = JSON.parse(c.env.RESEND_TOKENS);
+		if (!tokens || Array.isArray(tokens) || typeof tokens !== 'object' ||
+			Object.values(tokens).some(value => typeof value !== 'string' || !value)) throw new Error();
+		return tokens;
+	} catch { throw new BizError('Invalid RESEND_TOKENS Worker secret configuration', 503); }
+}
+
 const settingService = {
 
 	async refresh(c) {
 		const settingRow = await orm(c).select().from(setting).get();
-		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
+		// Sending credentials must never be cached alongside HTTP-served objects.
+		settingRow.resendTokens = {};
 		settingRow.r2Domain = '';
-		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
+		settingRow.resendTokens = resendSecrets(c);
+		c.set('setting', settingRow);
 	},
 
 	async query(c) {
@@ -32,6 +44,8 @@ const settingService = {
 		if (!setting) {
 			throw new BizError('数据库未初始化 Database not initialized.');
 		}
+		// Ignore credentials left in legacy KV snapshots. They are compromised.
+		setting.resendTokens = resendSecrets(c);
 
 		let domainList = c.env.domain;
 
@@ -69,10 +83,12 @@ const settingService = {
 
 	async get(c, showSiteKey = false) {
 
-		const [settingRow, recordList] = await Promise.all([
+		const [rawSetting, recordList] = await Promise.all([
 			await this.query(c),
 			verifyRecordService.selectListByIP(c)
 		]);
+		// Redaction must not replace secrets in this request's service cache.
+		const settingRow = { ...rawSetting, resendTokens: { ...rawSetting.resendTokens } };
 
 
 		if (!showSiteKey) {
@@ -112,11 +128,9 @@ const settingService = {
 	},
 
 	async set(c, params) {
-		const settingData = await this.query(c);
-		let resendTokens = { ...settingData.resendTokens, ...params.resendTokens };
-		Object.keys(resendTokens).forEach(domain => {
-			if (!resendTokens[domain]) delete resendTokens[domain];
-		});
+		if (params.resendTokens !== undefined) {
+			throw new BizError('Manage sending keys using the RESEND_TOKENS Secret in Cloudflare Workers settings', 400);
+		}
 
 		if (Array.isArray(params.emailPrefixFilter)) {
 			params.emailPrefixFilter = params.emailPrefixFilter + '';
@@ -130,7 +144,7 @@ const settingService = {
 			params.webhookUrl = domainUtils.toOssDomain(params.webhookUrl) || '';
 		}
 
-		params.resendTokens = JSON.stringify(resendTokens);
+		params.resendTokens = '{}';
 
 		await orm(c).update(setting).set({ ...params }).returning().get();
 		await this.refresh(c);

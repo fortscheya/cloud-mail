@@ -4,7 +4,9 @@ import i18n from "@/i18n/index.js";
 import {useSettingStore} from "@/store/setting.js";
 
 let http = axios.create({
-    baseURL: import.meta.env.VITE_BASE_URL
+    baseURL: import.meta.env.VITE_BASE_URL,
+    // API authentication failures carry normal business error envelopes.
+    validateStatus: status => (status >= 200 && status < 300) || [400, 401, 403, 429, 503].includes(status)
 });
 
 http.interceptors.request.use(config => {
@@ -70,11 +72,6 @@ http.interceptors.response.use((res) => {
         })
     },
     (error) => {
-
-        if (error.status === 403) {
-            location.reload();
-            return;
-        }
 
         const noMsg = error.config.noMsg;
 

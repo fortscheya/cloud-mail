@@ -9,6 +9,7 @@ import { parseHTML } from 'linkedom';
 import { v4 as uuidv4 } from 'uuid';
 import domainUtils from '../utils/domain-uitls';
 import settingService from "./setting-service";
+import { canReadObject } from '../security/object-access';
 
 const attService = {
 
@@ -122,6 +123,8 @@ const attService = {
 			if (image.content) {
 				return;
 			}
+			// A composed email must not copy an attachment belonging to another user.
+			if (!await canReadObject(c, image.key)) return;
 
 			const dbImage = dbImageList.find(dbImage => image.key === dbImage.key);
 			if (!dbImage) {

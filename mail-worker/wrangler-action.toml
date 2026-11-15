@@ -11,7 +11,7 @@ custom_domain = true
 
 [[d1_databases]]
 binding = "db"
-database_name = "cloud-mail"
+database_name = "db"
 database_id = "${D1_DATABASE_ID}"
 
 [[kv_namespaces]]
@@ -44,8 +44,13 @@ analysis_cache = "${ANALYSIS_CACHE}"
 #orm_log = false
 domain = "${DOMAIN}"
 admin = "${ADMIN}"
-jwt_secret = "${JWT_SECRET}"
 project_link = "${PROJECT_LINK}"
 
 [build]
-command = "pnpm --prefix ../mail-vue install && pnpm --prefix ../mail-vue run build"
+command = "pnpm --prefix ../mail-vue install --frozen-lockfile && pnpm --prefix ../mail-vue run build"
+
+# Shared account/IP login protection (10 attempts per minute per key).
+[[ratelimits]]
+name = "AUTH_RATE_LIMITER"
+namespace_id = "20261115"
+simple = { limit = 10, period = 60 }

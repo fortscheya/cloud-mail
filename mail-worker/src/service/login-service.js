@@ -19,6 +19,9 @@ import dayjs from 'dayjs';
 import { toUtc } from '../utils/date-uitil';
 import { t } from '../i18n/i18n.js';
 import verifyRecordService from './verify-record-service';
+import { clearAssetSession, safeUser, sessionHash, setAssetSession } from '../security/session';
+import { authRateLimit } from '../security/auth-rate-limit';
+import { validNewPassword } from '../utils/crypto-utils';
 
 const loginService = {
 
@@ -53,11 +56,7 @@ const loginService = {
 			throw new BizError(t('emailLengthLimit'));
 		}
 
-		if (password.length > 30) {
-			throw new BizError(t('pwdLengthLimit'));
-		}
-
-		if (password.length < 6) {
+		if (!validNewPassword(password)) {
 			throw new BizError(t('pwdMinLength'));
 		}
 
@@ -224,6 +223,12 @@ const loginService = {
 	async login(c, params, noVerifyPwd = false) {
 
 		const { email, password } = params;
+		const limited = await authRateLimit(c, email || 'invalid');
+		if (limited) throw new BizError('Too many authentication attempts', limited.status);
+		if (typeof email !== 'string' || email.length > 254 ||
+			(!noVerifyPwd && (typeof password !== 'string' || !password || password.length > 256))) {
+			throw new BizError('Invalid email or password', 401);
+		}
 
 		if ((!email || !password) && !noVerifyPwd) {
 			throw new BizError(t('emailAndPwdEmpty'));
@@ -232,58 +237,72 @@ const loginService = {
 		const userRow = await userService.selectByEmailIncludeDel(c, email);
 
 		if (!userRow) {
-			throw new BizError(t('notExistUser'));
+			// Match the current password KDF cost without disclosing account existence.
+			await cryptoUtils.verifyPassword(password, 'AAAAAAAAAAAAAAAAAAAAAA==',
+				'pbkdf2-sha256$100000$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+			throw new BizError('Invalid email or password', 401);
 		}
 
 		if(userRow.isDel === isDel.DELETE) {
-			throw new BizError(t('isDelUser'));
+			throw new BizError('Invalid email or password', 401);
 		}
 
 		if(userRow.status === userConst.status.BAN) {
-			throw new BizError(t('isBanUser'));
+			throw new BizError('Invalid email or password', 401);
 		}
 
-		if (!await cryptoUtils.verifyPassword(password, userRow.salt, userRow.password) && !noVerifyPwd) {
-			throw new BizError(t('IncorrectPwd'));
+		if (!noVerifyPwd && !await cryptoUtils.verifyPassword(password, userRow.salt, userRow.password)) {
+			if (cryptoUtils.needsRehash(userRow.password)) {
+				await cryptoUtils.genHashPassword(password, 'AAAAAAAAAAAAAAAAAAAAAA==');
+			}
+			throw new BizError('Invalid email or password', 401);
+		}
+		if (!noVerifyPwd && cryptoUtils.needsRehash(userRow.password)) {
+			await userService.upgradePassword(c, userRow, password);
 		}
 
 		const uuid = uuidv4();
-		const jwt = await JwtUtils.generateToken(c,{ userId: userRow.userId, token: uuid });
+		const jwt = await JwtUtils.generateToken(c,{ userId: userRow.userId, token: uuid, gen: constant.AUTH_GEN }, constant.TOKEN_EXPIRE);
+		const tokenHash = await sessionHash(uuid);
 
 		let authInfo = await c.env.kv.get(KvConst.AUTH_INFO + userRow.userId, { type: 'json' });
 
-		if (authInfo && (authInfo.user.email === userRow.email)) {
+		if (authInfo?.gen === constant.AUTH_GEN && authInfo.user.email === userRow.email) {
 
 			if (authInfo.tokens.length > 10) {
 				authInfo.tokens.shift();
 			}
 
-			authInfo.tokens.push(uuid);
+			authInfo.tokens.push(tokenHash);
 
 		} else {
 
 			authInfo = {
+				gen: constant.AUTH_GEN,
 				tokens: [],
-				user: userRow,
+				user: safeUser(userRow),
 				refreshTime: dayjs().toISOString()
 			};
 
-			authInfo.tokens.push(uuid);
+			authInfo.tokens.push(tokenHash);
 
 		}
 
 		await userService.updateUserInfo(c, userRow.userId);
 
+		authInfo.user = safeUser(userRow);
 		await c.env.kv.put(KvConst.AUTH_INFO + userRow.userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
+		setAssetSession(c, jwt);
 		return jwt;
 	},
 
 	async logout(c, userId) {
 		const token = await userContext.getToken(c);
 		const authInfo = await c.env.kv.get(KvConst.AUTH_INFO + userId, { type: 'json' });
-		const index = authInfo.tokens.findIndex(item => item === token);
-		authInfo.tokens.splice(index, 1);
+		const tokenHash = await sessionHash(token);
+		authInfo.tokens = authInfo.tokens.filter(item => item !== tokenHash);
 		await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
+		clearAssetSession(c);
 	}
 
 };

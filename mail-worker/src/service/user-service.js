@@ -2,7 +2,7 @@ import BizError from '../error/biz-error';
 import accountService from './account-service';
 import orm from '../entity/orm';
 import user from '../entity/user';
-import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, sql, getTableColumns } from 'drizzle-orm';
 import { emailConst, isDel, roleConst, settingConst, userConst } from '../const/entity-const';
 import kvConst from '../const/kv-const';
 import KvConst from '../const/kv-const';
@@ -20,8 +20,20 @@ import {oauth} from "../entity/oauth";
 import oauthService from "./oauth-service";
 import settingService from './setting-service';
 import starService from './star-service';
+import { validNewPassword } from '../utils/crypto-utils';
+
+const { password: passwordColumn, salt: saltColumn, ...publicUserColumns } = getTableColumns(user);
 
 const userService = {
+	async upgradePassword(c, userRow, plaintext) {
+		const { salt, hash } = await cryptoUtils.hashPassword(plaintext);
+		const updated = await orm(c).update(user).set({ password: hash, salt }).where(
+			and(eq(user.userId, userRow.userId), eq(user.password, userRow.password))
+		).returning({ userId: user.userId }).get();
+		if (!updated) throw new BizError(t('authExpired'), 401);
+		userRow.password = hash;
+		userRow.salt = salt;
+	},
 
 	async loginUserInfo(c, userId) {
 
@@ -60,11 +72,12 @@ const userService = {
 
 		const { password } = params;
 
-		if (password.length < 6) {
+		if (!validNewPassword(password)) {
 			throw new BizError(t('pwdMinLength'));
 		}
 		const { salt, hash } = await cryptoUtils.hashPassword(password);
 		await orm(c).update(user).set({ password: hash, salt: salt }).where(eq(user.userId, userId)).run();
+		await c.env.kv.delete(KvConst.AUTH_INFO + userId);
 	},
 
 	selectByEmail(c, email) {
@@ -158,7 +171,7 @@ const userService = {
 
 
 		const query = orm(c).select({
-			...user,
+			...publicUserColumns,
 			username: oauth.username,
 			trustLevel: oauth.trustLevel,
 			avatar: oauth.avatar,
@@ -329,7 +342,7 @@ const userService = {
 			throw new BizError(t('notEmailDomain'));
 		}
 
-		if (password.length < 6) {
+		if (!validNewPassword(password)) {
 			throw new BizError(t('pwdMinLength'));
 		}
 

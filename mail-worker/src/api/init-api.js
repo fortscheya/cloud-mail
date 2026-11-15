@@ -1,6 +1,4 @@
 import app from '../hono/hono';
-import { dbInit } from '../init/init';
 
-app.get('/init/:secret', (c) => {
-	return dbInit.init(c);
-})
+// Existing deployment is initialized. Never use a credential as a URL parameter.
+app.get('/init/:secret', (c) => c.notFound());

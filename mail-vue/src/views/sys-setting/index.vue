@@ -1616,7 +1616,7 @@ function openCut() {
 }
 
 function openResendForm() {
-  resendTokenFormShow.value = true
+  ElMessageBox.alert(t('resendSecretInstructions'), t('resendToken'))
 }
 
 function openBlackListForm() {

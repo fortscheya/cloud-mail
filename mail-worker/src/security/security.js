@@ -7,17 +7,17 @@ import userService from '../service/user-service';
 import permService from '../service/perm-service';
 import { t } from '../i18n/i18n'
 import app from '../hono/hono';
+import { getCookie } from 'hono/cookie';
+import { ASSET_COOKIE, safeUser, sessionHash, setAssetSession } from './session';
+import { isPublicObject } from './object-access';
+import { authRateLimit } from './auth-rate-limit';
 
 const exclude = [
 	'/login',
 	'/register',
-	'/oss',
 	'/setting/websiteConfig',
 	'/webhooks',
-	'/init',
-	'/public/genToken',
 	'/telegram',
-	'/test',
 	'/oauth'
 ];
 
@@ -92,43 +92,46 @@ const premKey = {
 app.use('*', async (c, next) => {
 
 	const path = c.req.path;
+	if (!path.startsWith('/oss/')) c.header('Cache-Control', 'no-store');
+	if (path === '/init' || path.startsWith('/init/')) return c.notFound();
+	if (path === '/login' || path === '/register' || path === '/public/genToken') {
+		const limited = await authRateLimit(c);
+		if (limited) return limited;
+	}
+	if (path.startsWith('/oss/') && isPublicObject(path.slice('/oss/'.length))) {
+		return next();
+	}
 
 	const index = exclude.findIndex(item => {
-		return path.startsWith(item);
+		return path === item || (['/oauth', '/telegram'].includes(item) && path.startsWith(item + '/'));
 	});
 
 	if (index > -1) {
 		return await next();
 	}
 
-	if (path.startsWith('/public')) {
-
-		const userPublicToken = await c.env.kv.get(KvConst.PUBLIC_KEY);
-		const publicToken = c.req.header(constant.TOKEN_HEADER);
-		if (publicToken !== userPublicToken) {
-			throw new BizError(t('publicTokenFail'), 401);
-		}
-		return await next();
-	}
-
-
-	const jwt = c.req.header(constant.TOKEN_HEADER);
+	// Cookies authenticate only object reads; API writes still require Authorization.
+	const jwt = c.req.header(constant.TOKEN_HEADER) ||
+		(path.startsWith('/oss/') ? getCookie(c, ASSET_COOKIE) : undefined);
 
 	const result = await jwtUtils.verifyToken(c, jwt);
 
-	if (!result) {
+	if (!result || result.gen !== constant.AUTH_GEN || typeof result.token !== 'string') {
 		throw new BizError(t('authExpired'), 401);
 	}
 
 	const { userId, token } = result;
 	const authInfo = await c.env.kv.get(KvConst.AUTH_INFO + userId, { type: 'json' });
 
-	if (!authInfo) {
+	if (!authInfo?.user || authInfo.gen !== constant.AUTH_GEN || !Array.isArray(authInfo.tokens)) {
 		throw new BizError(t('authExpired'), 401);
 	}
 
-	if (!authInfo.tokens.includes(token)) {
+	if (!authInfo.tokens.includes(await sessionHash(token))) {
 		throw new BizError(t('authExpired'), 401);
+	}
+	if ((path === '/public' || path.startsWith('/public/') || path === '/test' || path.startsWith('/test/')) && authInfo.user.email !== c.env.admin) {
+		throw new BizError(t('unauthorized'), 403);
 	}
 
 	const permIndex = requirePerms.findIndex(item => {
@@ -160,7 +163,8 @@ app.use('*', async (c, next) => {
 		await c.env.kv.put(KvConst.AUTH_INFO + userId, JSON.stringify(authInfo), { expirationTtl: constant.TOKEN_EXPIRE });
 	}
 
-	c.set('user',authInfo.user)
+	c.set('user', safeUser(authInfo.user));
+	if (c.req.header(constant.TOKEN_HEADER)) setAssetSession(c, jwt);
 
 	return await next();
 });

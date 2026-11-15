@@ -539,7 +539,7 @@ function submitRegister() {
     return
   }
 
-  if (registerForm.password.length < 6) {
+  if (registerForm.password.length < 12 || registerForm.password.length > 128) {
     ElMessage({
       message: t('pwdLengthMsg'),
       type: 'error',

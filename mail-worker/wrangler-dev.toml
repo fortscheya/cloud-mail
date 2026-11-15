@@ -44,3 +44,9 @@ orm_log = true
 domain = ["example.com", "example2.com", "example3.com", "example4.com"]
 admin = "admin@example.com"
 jwt_secret = "b7f29a1d-18e2-4d3b-941f-f6b2c97c02fd"
+
+# Shared account/IP login protection (10 attempts per minute per key).
+[[ratelimits]]
+name = "AUTH_RATE_LIMITER"
+namespace_id = "20261115"
+simple = { limit = 10, period = 60 }

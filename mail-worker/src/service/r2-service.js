@@ -1,6 +1,7 @@
 import s3Service from './s3-service';
 import settingService from './setting-service';
 import kvObjService from './kv-obj-service';
+import { canReadObject, objectResponse } from '../security/object-access';
 
 const r2Service = {
 
@@ -61,11 +62,12 @@ const r2Service = {
 	 * can serve KV / R2 / S3 the same way.
 	 */
 	async toObjResp(c, key) {
+		if (!await canReadObject(c, key)) return null;
 		try {
 			const storageType = await this.storageType(c);
 
 			if (storageType === 'KV') {
-				return await kvObjService.getObj(c, key);
+				return objectResponse(await kvObjService.getObj(c, key), key);
 			}
 
 			if (storageType === 'R2') {
@@ -73,17 +75,17 @@ const r2Service = {
 				if (!obj) {
 					return null;
 				}
-				return new Response(obj.body, {
+				return objectResponse(new Response(obj.body, {
 					headers: {
 						'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream',
 						'Content-Disposition': obj.httpMetadata?.contentDisposition || null,
 						'Cache-Control': obj.httpMetadata?.cacheControl || null
 					}
-				});
+				}), key);
 			}
 
 			if (storageType === 'S3') {
-				return await s3Service.getObj(c, key);
+				return objectResponse(await s3Service.getObj(c, key), key);
 			}
 
 			return null;
