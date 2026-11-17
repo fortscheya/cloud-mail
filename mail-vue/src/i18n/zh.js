@@ -239,6 +239,7 @@ const zh = {
     notEmailMsg: '输入的邮箱不合法',
     emptyPwdMsg: '密码不能为空',
     resendSecretInstructions: '请在 Cloudflare Workers → 设置 → 变量和机密中管理 RESEND_TOKENS Secret，值为域名到最小权限发信密钥的 JSON 映射。发信密钥不再保存到站点数据库。',
+    resendConfigInvalid: 'RESEND_TOKENS 格式不正确，Resend 发信暂不可用。请在 Cloudflare 中将它填写为域名到发送密钥的 JSON 对象。系统设置仍可正常修改。',
     pwdLengthMsg: '新密码须为 12–128 个字符',
     minEmailPrefix: '邮箱名至少{msg}位',
     confirmPwdFailMsg: '两次密码输入不一致',

@@ -240,6 +240,7 @@ const en = {
     minEmailPrefix: 'Email must be at least {msg} characters',
     emptyPwdMsg: 'Password cannot be empty',
     resendSecretInstructions: 'Manage the RESEND_TOKENS Secret in Cloudflare Workers Settings → Variables and Secrets, using a JSON map of domains to sending-only API keys. Sending keys are no longer stored in the site database.',
+    resendConfigInvalid: 'RESEND_TOKENS must be a JSON object mapping domains to sending keys. Resend sending is unavailable until it is corrected in Cloudflare. You can still edit system settings.',
     pwdLengthMsg: 'New passwords must contain 12–128 characters',
     confirmPwdFailMsg: 'The two passwords do not match',
     emptyRegKeyMsg: 'Invite code cannot be empty',

@@ -345,7 +345,7 @@ const emailService = {
 			attachments = [] //附件
 		} = params;
 
-		const { resendTokens, r2Domain, send, domainList } = await settingService.query(c);
+		const { r2Domain, send, domainList } = await settingService.query(c);
 
 		let { imageDataList, html } = await attService.toImageUrlHtml(c, content);
 
@@ -411,8 +411,9 @@ const emailService = {
 		}
 
 		const domain = emailUtils.getDomain(accountRow.email);
-		const resendToken = resendTokens[domain];
 		const useCloudflareEmail = !!c.env.email;
+		const resendToken = !allInternal && !useCloudflareEmail
+			? settingService.resendToken(c, domain) : undefined;
 
 		//如果接收方存在站外邮箱，又没有发信服务
 		if (!useCloudflareEmail && !resendToken && !allInternal) {

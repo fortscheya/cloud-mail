@@ -12,16 +12,26 @@ import userContext from '../security/user-context';
 import domainUtils from '../utils/domain-uitls';
 
 function resendSecrets(c) {
-	if (!c.env.RESEND_TOKENS) return {};
+	const raw = c.env.RESEND_TOKENS;
+	if (!raw) return { status: 'missing', tokens: {} };
 	try {
-		const tokens = JSON.parse(c.env.RESEND_TOKENS);
+		const tokens = JSON.parse(raw.trim());
 		if (!tokens || Array.isArray(tokens) || typeof tokens !== 'object' ||
-			Object.values(tokens).some(value => typeof value !== 'string' || !value)) throw new Error();
-		return tokens;
-	} catch { throw new BizError('Invalid RESEND_TOKENS Worker secret configuration', 503); }
+			Object.values(tokens).some(value => typeof value !== 'string' || !value.trim())) throw new Error();
+		return { status: Object.keys(tokens).length ? 'configured' : 'missing', tokens };
+	} catch {
+		// Mail delivery configuration must not block settings, login or receiving.
+		// Never log the raw Secret or fall back to compromised database keys.
+		return { status: 'invalid', tokens: {} };
+	}
 }
 
 const settingService = {
+	resendToken(c, domain) {
+		const config = resendSecrets(c);
+		if (config.status === 'invalid') throw new BizError(t('resendConfigInvalid'), 503);
+		return config.tokens[domain];
+	},
 
 	async refresh(c) {
 		const settingRow = await orm(c).select().from(setting).get();
@@ -29,7 +39,7 @@ const settingService = {
 		settingRow.resendTokens = {};
 		settingRow.r2Domain = '';
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
-		settingRow.resendTokens = resendSecrets(c);
+		settingRow.resendTokens = resendSecrets(c).tokens;
 		c.set('setting', settingRow);
 	},
 
@@ -45,7 +55,7 @@ const settingService = {
 			throw new BizError('数据库未初始化 Database not initialized.');
 		}
 		// Ignore credentials left in legacy KV snapshots. They are compromised.
-		setting.resendTokens = resendSecrets(c);
+		setting.resendTokens = resendSecrets(c).tokens;
 
 		let domainList = c.env.domain;
 
@@ -89,6 +99,7 @@ const settingService = {
 		]);
 		// Redaction must not replace secrets in this request's service cache.
 		const settingRow = { ...rawSetting, resendTokens: { ...rawSetting.resendTokens } };
+		settingRow.resendConfigStatus = resendSecrets(c).status;
 
 
 		if (!showSiteKey) {
@@ -128,6 +139,9 @@ const settingService = {
 	},
 
 	async set(c, params) {
+		// Status is response-only; the settings UI may echo it when saving.
+		const { resendConfigStatus, ...editable } = params;
+		params = editable;
 		if (params.resendTokens !== undefined) {
 			throw new BizError('Manage sending keys using the RESEND_TOKENS Secret in Cloudflare Workers settings', 400);
 		}

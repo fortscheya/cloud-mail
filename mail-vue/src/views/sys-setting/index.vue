@@ -5,6 +5,8 @@
     </div>
     <el-scrollbar class="scroll" v-if="!firstLoading">
       <div class="scroll-body">
+        <el-alert v-if="setting.resendConfigStatus === 'invalid'" type="warning" show-icon
+                  :closable="false" :title="$t('resendConfigInvalid')"/>
         <div class="card-grid">
           <!-- Basic Settings Card -->
           <div class="settings-card">

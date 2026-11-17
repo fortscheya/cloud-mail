@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:test';
 import worker from '../src/index';
 import app from '../src/hono/hono';
@@ -8,6 +8,8 @@ import { sessionHash, ASSET_COOKIE } from '../src/security/session';
 import settingService from '../src/service/setting-service';
 import { validNewPassword } from '../src/utils/crypto-utils';
 import userService from '../src/service/user-service';
+import settingSchema from '../src/entity/setting';
+import { getTableConfig } from 'drizzle-orm/sqlite-core';
 
 const password = 'test-only-Strong-Password-47';
 const key = 'attachments/' + 'a'.repeat(32) + '.png';
@@ -47,7 +49,8 @@ beforeEach(async () => {
 		AUTH_RATE_LIMITER: { limit: async () => ({ success: true }) }, RESEND_WEBHOOK_SECRET: webhookSecret };
 	await env.db.exec(`
 CREATE TABLE user (user_id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE,type INTEGER DEFAULT 1,password TEXT NOT NULL,salt TEXT NOT NULL,status INTEGER DEFAULT 0,create_time TEXT DEFAULT CURRENT_TIMESTAMP,active_time TEXT,create_ip TEXT,active_ip TEXT,os TEXT,browser TEXT,device TEXT,sort TEXT DEFAULT '0',send_count TEXT DEFAULT '0',reg_key_id INTEGER DEFAULT 0,is_del INTEGER DEFAULT 0);
-CREATE TABLE account (account_id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE,name TEXT,user_id INTEGER,is_del INTEGER DEFAULT 0);
+CREATE TABLE account (account_id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE,name TEXT,user_id INTEGER,is_del INTEGER DEFAULT 0,status INTEGER DEFAULT 0,latest_email_time TEXT,create_time TEXT DEFAULT CURRENT_TIMESTAMP,all_receive INTEGER DEFAULT 0,sort INTEGER DEFAULT 0);
+CREATE TABLE verify_record (vr_id INTEGER PRIMARY KEY,ip TEXT,count INTEGER,type INTEGER,update_time TEXT);
 CREATE TABLE oauth (user_id INTEGER,username TEXT,trust_level INTEGER,avatar TEXT,name TEXT,platform TEXT);
 CREATE TABLE perm (perm_id INTEGER PRIMARY KEY,perm_key TEXT,type INTEGER DEFAULT 2);
 CREATE TABLE role_perm (id INTEGER PRIMARY KEY,role_id INTEGER,perm_id INTEGER);
@@ -62,6 +65,77 @@ INSERT INTO email(email_id,user_id,account_id,resend_email_id,status) VALUES(1,2
 	await env.kv.put('public_key:', 'old-shared-token');
 	await env.kv.put(key, 'private attachment', { metadata: { contentType: 'image/png', cacheControl: 'public, max-age=300' } });
 	await env.kv.put(background, 'public background');
+});
+
+describe('Resend configuration availability', () => {
+	const invalidValues = [
+		'plain-api-key-fixture',
+		'```json\n{"example.test":"fixture"}\n```',
+		JSON.stringify(JSON.stringify({ 'example.test': 'fixture' })),
+		'null', '[]', '{"example.test":null}', '{"example.test":"   "}',
+	];
+	it.each(invalidValues)('keeps system settings and website configuration available for invalid input %#', async raw => {
+		bindings.RESEND_TOKENS = raw;
+		const response = await request('/api/setting/query', { token: await session() });
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body.code).toBe(200);
+		expect(body.data.resendConfigStatus).toBe('invalid');
+		expect(body.data.resendTokens).toEqual({});
+		expect(JSON.stringify(body)).not.toContain('plain-api-key-fixture');
+		const publicResponse = await request('/api/setting/websiteConfig');
+		expect(publicResponse.status).toBe(200);
+		const publicBody = await publicResponse.json();
+		expect(publicBody.code).toBe(200);
+		expect(publicBody.data).not.toHaveProperty('resendConfigStatus');
+		expect(publicBody.data).not.toHaveProperty('resendTokens');
+	});
+	it('lets administrators save ordinary settings without persisting status or sending keys', async () => {
+		const columns = getTableConfig(settingSchema).columns.map(column =>
+			`"${column.name}" ${column.getSQLType()} DEFAULT ${column.dataType === 'number' ? '0' : "''"}`);
+		await env.db.exec(`CREATE TABLE setting (${columns.join(',')}); INSERT INTO setting(title,resend_tokens) VALUES('before','{"example.test":"compromised-fixture-only"}');`);
+		bindings.RESEND_TOKENS = 'plain-api-key-fixture';
+		const token = await session();
+		const response = await request('/api/setting/set', { token, method: 'PUT', body: { title: 'after', resendConfigStatus: 'configured' } });
+		expect(response.status).toBe(200);
+		expect((await response.json()).code).toBe(200);
+		const saved = await env.db.prepare('SELECT title,resend_tokens FROM setting').first();
+		expect(saved).toEqual({ title: 'after', resend_tokens: '{}' });
+		const cache = await env.kv.get('setting:', 'json');
+		expect(cache.title).toBe('after');
+		expect(cache.resendTokens).toEqual({});
+		expect(cache).not.toHaveProperty('resendConfigStatus');
+		const current = await (await request('/api/setting/query', { token })).json();
+		expect(current.data.resendConfigStatus).toBe('invalid');
+	});
+	it('rejects an external Resend send before any provider request for invalid configuration', async () => {
+		bindings.RESEND_TOKENS = 'plain-api-key-fixture';
+		await env.db.prepare('INSERT INTO user(user_id,email,password,salt) VALUES(1,?,?,?)').bind('admin@example.test', 'unused', 'unused').run();
+		await env.db.prepare('INSERT INTO account(account_id,user_id,email,name) VALUES(1,1,?,?)').bind('admin@example.test', 'admin').run();
+		const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Provider must not be called'));
+		try {
+			const response = await request('/api/email/send', { token: await session(), body: {
+				accountId: 1, receiveEmail: ['outside@other.test'], content: '<p>fixture</p>', text: 'fixture', subject: 'fixture',
+			} });
+			expect(response.status).toBe(503);
+			const body = await response.json();
+			expect(body.message).toContain('RESEND_TOKENS');
+			expect(body.message).not.toContain('plain-api-key-fixture');
+			expect(fetch).not.toHaveBeenCalled();
+		} finally { fetch.mockRestore(); }
+	});
+	it('recovers immediately after the Secret is corrected without using legacy keys', async () => {
+		bindings.RESEND_TOKENS = 'plain-api-key-fixture';
+		expect(() => settingService.resendToken({ env: bindings }, 'example.test')).toThrow('RESEND_TOKENS');
+		bindings.RESEND_TOKENS = '\uFEFF  ' + JSON.stringify({ 'example.test': 'new-test-only-fixture' }) + '\n';
+		expect(settingService.resendToken({ env: bindings }, 'example.test')).toBe('new-test-only-fixture');
+		const response = await request('/api/setting/query', { token: await session() });
+		const body = await response.json();
+		expect(body.data.resendConfigStatus).toBe('configured');
+		expect(JSON.stringify(body)).not.toContain('new-test-only-fixture');
+		delete bindings.RESEND_TOKENS;
+		expect(settingService.resendToken({ env: bindings }, 'example.test')).toBeUndefined();
+	});
 });
 
 describe('HTTP access boundaries', () => {
