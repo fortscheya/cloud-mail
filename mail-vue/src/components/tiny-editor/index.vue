@@ -34,6 +34,7 @@ const {locale} = useI18n()
 const emit = defineEmits(['change','focus']);
 const editor = shallowRef(null);
 const isInitialized = ref(false);
+let focusPending = false;
 const editorRef = ref(null);
 const showLoading = ref(false);
 const uiStore = useUiStore();
@@ -48,7 +49,7 @@ onBeforeUnmount(() => {
 });
 
 watch(() => props.defValue, (newValue) => {
-  if (editor.value && editor.value.getContent() !== newValue) {
+  if (isInitialized.value && editor.value && editor.value.getContent() !== newValue) {
     editor.value.setContent(newValue);
   }
 });
@@ -115,6 +116,10 @@ function initEditor() {
       ed.on('init', () => {
         ed.setContent(props.defValue);
         isInitialized.value = true;
+        if (focusPending) {
+          focusPending = false;
+          ed.focus();
+        }
       });
       ed.on('input change', () => {
         const content = ed.getContent();
@@ -158,17 +163,22 @@ function initEditor() {
 }
 
 function focus() {
+  if (!isInitialized.value) {
+    focusPending = true;
+    return;
+  }
   nextTick(() => {
-    editor.value.focus()
+    editor.value?.focus()
   })
 }
 
 function getContent() {
-  return editor.value.getContent()
+  return isInitialized.value && editor.value ? editor.value.getContent() : props.defValue || ''
 }
 
 
 function destroyEditor() {
+  isInitialized.value = false;
   if (editor.value) {
     editor.value.destroy();
     editor.value = null;

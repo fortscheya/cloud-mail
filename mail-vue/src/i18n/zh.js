@@ -104,6 +104,8 @@ const zh = {
     noSenderDomains: '暂无可用发信域名，请检查发信服务配置。',
     invalidSenderAddress: '请输入合法的发件邮箱地址。',
     replyButton: '回信',
+    replyToAddress: '回信地址',
+    noReplyRecipient: '这封邮件没有有效的回信地址，请手动填写收件人。',
     user: '用户',
     searchByContent: '输入内容查询',
     search: '搜索',

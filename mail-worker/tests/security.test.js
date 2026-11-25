@@ -10,6 +10,9 @@ import { validNewPassword } from '../src/utils/crypto-utils';
 import userService from '../src/service/user-service';
 import settingSchema from '../src/entity/setting';
 import { getTableConfig } from 'drizzle-orm/sqlite-core';
+import { dbInit } from '../src/init/init';
+import replyToMigration from '../migrations/0001_add_email_reply_to.sql?raw';
+import { getReplyRecipients, normalizeMailboxes } from '../../shared/mail-addresses.js';
 
 const password = 'test-only-Strong-Password-47';
 const key = 'attachments/' + 'a'.repeat(32) + '.png';
@@ -61,6 +64,7 @@ CREATE TABLE email (email_id INTEGER PRIMARY KEY,send_email TEXT,name TEXT,sende
 INSERT INTO role(role_id,name,is_default) VALUES(1,'default',1);
 INSERT INTO email(email_id,user_id,account_id,resend_email_id,status) VALUES(1,2,1,'known-email',0);
 `);
+	await env.db.exec(replyToMigration);
 	await env.db.prepare('INSERT INTO attachments(att_id,user_id,email_id,key) VALUES(1,2,1,?)').bind(key).run();
 	await env.kv.put('setting:', JSON.stringify({ resendTokens: { 'example.test': 'compromised-fixture-only' }, emailPrefixFilter: '', bucket: '', endpoint: '', s3AccessKey: '', s3SecretKey: '' }));
 	await env.kv.put('public_key:', 'old-shared-token');
@@ -136,6 +140,80 @@ describe('Resend configuration availability', () => {
 		expect(JSON.stringify(body)).not.toContain('new-test-only-fixture');
 		delete bindings.RESEND_TOKENS;
 		expect(settingService.resendToken({ env: bindings }, 'example.test')).toBeUndefined();
+	});
+});
+
+describe('Reply-To preservation and reply recipients', () => {
+	beforeEach(async () => {
+		await env.db.exec(`
+INSERT INTO user(user_id,email,password,salt) VALUES(1,'admin@example.test','unused','unused');
+INSERT INTO account(account_id,user_id,email,name) VALUES(1,1,'admin@example.test','Admin');
+`);
+	});
+
+	async function receive(headers, { splitBytes = false } = {}) {
+		const raw = ['From: News <news@sender.test>', 'To: admin@example.test', 'Subject: Reply target fixture',
+			'Message-ID: <original@sender.test>', ...headers, 'Content-Type: text/plain; charset=utf-8', '', 'Body'].join('\r\n');
+		const bytes = new TextEncoder().encode(raw);
+		const message = { from: 'bounce@transport.test', to: 'admin@example.test', setReject: vi.fn(),
+			raw: splitBytes ? new ReadableStream({ start(controller) {
+				for (const byte of bytes) controller.enqueue(new Uint8Array([byte]));
+				controller.close();
+			} }) : new Response(bytes).body };
+		await worker.email(message, bindings, {});
+		expect(message.setReject).not.toHaveBeenCalled();
+		const token = await session();
+		const data = (await (await request('/api/email/list?accountId=1&allReceive=1&type=0&size=10&full=1', { token })).json()).data;
+		return data.list[0];
+	}
+
+	it('migrates existing mail without losing data and keeps initialization idempotent', async () => {
+		expect(await env.db.prepare('SELECT resend_email_id,reply_to FROM email WHERE email_id=1').first())
+			.toEqual({ resend_email_id: 'known-email', reply_to: '[]' });
+		await dbInit.v3_5DB({ env: bindings });
+		await dbInit.v3_5DB({ env: bindings });
+		expect(await env.db.prepare('SELECT count(*) AS n FROM email').first()).toEqual({ n: 1 });
+	});
+	it('persists folded, named, grouped and multiple Reply-To addresses in both list modes', async () => {
+		const received = await receive(['Reply-To: Help: "Desk, Team" <desk@help.test>,', '\tbackup@help.test, desk@HELP.TEST;']);
+		expect(JSON.parse(received.replyTo)).toEqual([{ address: 'desk@help.test', name: 'Desk, Team' }, { address: 'backup@help.test', name: '' }]);
+		expect(getReplyRecipients(received, 1)).toEqual(['desk@help.test', 'backup@help.test']);
+		expect(received.sendEmail).toBe('news@sender.test');
+		expect(received.senderEmail).toBe('bounce@transport.test');
+		const data = (await (await request('/api/email/list?accountId=1&allReceive=1&type=0&size=10&full=0', { token: await session() })).json()).data;
+		expect(data.list[0].replyTo).toBe(received.replyTo);
+		expect(getReplyRecipients(data.list[0], 1)).toEqual(['desk@help.test', 'backup@help.test']);
+	});
+	it('preserves UTF-8 Reply-To across stream chunk boundaries', async () => {
+		const received = await receive(['Reply-To: 回信 <用户@reply.test>'], { splitBytes: true });
+		expect(JSON.parse(received.replyTo)).toEqual([{ address: '用户@reply.test', name: '回信' }]);
+		expect(getReplyRecipients(received, 1)).toEqual(['用户@reply.test']);
+	});
+	it.each([{ headers: [] }, { headers: ['Reply-To: invalid-address'] }])('falls back to header From when Reply-To is missing or unusable: %j', async ({ headers }) => {
+		const received = await receive(headers);
+		expect(received.replyTo).toBe('[]');
+		expect(getReplyRecipients(received, 1)).toEqual(['news@sender.test']);
+	});
+	it('uses usable Reply-To entries and rejects malformed addresses without throwing on legacy values', () => {
+		const received = { type: 0, userId: 1, sendEmail: 'news@sender.test',
+			replyTo: JSON.stringify([{ address: 'broken' }, { address: 'good@reply.test' }, { address: 'bad\r\nBcc:x@reply.test' }, { address: 'bad\u0001@reply.test' }]) };
+		expect(getReplyRecipients(received, 1)).toEqual(['good@reply.test']);
+		for (const replyTo of [undefined, null, '', '[]', 'null', 'malformed JSON', '[{"name":"No address"}]']) {
+			expect(getReplyRecipients({ ...received, replyTo }, 1)).toEqual(['news@sender.test']);
+		}
+		expect(getReplyRecipients({ ...received, replyTo: '[]', sendEmail: '' }, 1)).toEqual([]);
+	});
+	it('keeps original To for own sent mail and honors Reply-To when an admin views another member’s sent mail', () => {
+		const sent = { type: 1, userId: 2, sendEmail: 'member@example.test', replyTo: '[{"address":"support@reply.test"}]',
+			recipient: '[{"name":"Customer, One","address":"customer@other.test"},{"address":"second@other.test"},{"address":"customer@OTHER.TEST"}]' };
+		expect(getReplyRecipients(sent, 2)).toEqual(['customer@other.test', 'second@other.test']);
+		expect(getReplyRecipients(sent, 1)).toEqual(['support@reply.test']);
+	});
+	it('supports quoted local parts and international domains without splitting display names into recipients', () => {
+		expect(normalizeMailboxes([{ name: 'Desk, One', address: '"desk,one"@example.test' }, { address: 'user@例子.中国' }]))
+			.toEqual([{ name: 'Desk, One', address: '"desk,one"@example.test' }, { name: '', address: 'user@xn--fsqu00a.xn--fiqs8s' }]);
+		expect(getReplyRecipients({ type: 0, replyTo: [{ address: 'Case@example.test' }, { address: 'case@EXAMPLE.TEST' }] }, 1))
+			.toEqual(['Case@example.test', 'case@example.test']);
 	});
 });
 

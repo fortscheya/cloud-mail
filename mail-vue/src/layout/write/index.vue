@@ -137,6 +137,7 @@ import dayjs from "dayjs";
 import {useI18n} from "vue-i18n";
 import router from "@/router/index.js";
 import {ElMessageBox} from "element-plus";
+import {getReplyRecipients} from '../../../../shared/mail-addresses.js';
 
 defineExpose({
   open,
@@ -550,12 +551,17 @@ function openForward(email) {
 
 function openReply(email) {
 
+  const recipients = getReplyRecipients(email, userStore.user.userId)
+  if (!recipients.length) {
+    ElMessage.error(t('noReplyRecipient'))
+    return
+  }
+
   resetForm();
 
   email.subject = email.subject || ''
 
   const ownSent = email.type === 1 && email.userId === userStore.user.userId
-  const recipients = ownSent ? JSON.parse(email.recipient || '[]').map(item => item.address) : [email.sendEmail]
   form.receiveEmail.push(...recipients)
   form.subject = (
       email.subject.startsWith('Re:') ||

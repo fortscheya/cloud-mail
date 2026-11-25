@@ -36,6 +36,7 @@
                 </div>
               </div>
               <div class="receive"><span class="source">{{$t('recipient')}}</span><span class="receive-email">{{  formateReceive(email.recipient) }}</span></div>
+              <div v-if="replyToDisplay" class="receive"><span class="source">{{$t('replyToAddress')}}</span><span class="receive-email">{{ replyToDisplay }}</span></div>
               <div class="date">
                 <div>{{ formatDetailDate(email.createTime) }}</div>
               </div>
@@ -103,6 +104,7 @@ import {useUiStore} from "@/store/ui.js";
 import {useUserStore} from "@/store/user.js";
 import {useI18n} from "vue-i18n";
 import {EmailUnreadEnum} from "@/enums/email-enum.js";
+import {normalizeMailboxes} from '../../../../shared/mail-addresses.js';
 const { t } = useI18n()
 
 const uiStore = useUiStore();
@@ -136,6 +138,9 @@ const sentViaEmail = computed(() => {
   if (!address || address.toLowerCase() === String(email.value.sendEmail || '').trim().toLowerCase()) return ''
   return address
 })
+
+const replyToDisplay = computed(() => normalizeMailboxes(email.value.replyTo)
+  .map(item => item.name ? `${item.name} <${item.address}>` : item.address).join(', '))
 
 watch(() => accountStore.currentAccountId, () => {
   handleBack()

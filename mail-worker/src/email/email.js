@@ -12,6 +12,7 @@ import userService from '../service/user-service';
 import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
+import { normalizeMailboxes } from '../../../shared/mail-addresses.js';
 
 export async function email(message, env, ctx) {
 
@@ -43,16 +44,8 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
-		const reader = message.raw.getReader();
-		let content = '';
-
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			content += new TextDecoder().decode(value);
-		}
-
-		const email = await PostalMime.parse(content);
+		// Parse the byte stream directly so split UTF-8 header characters survive.
+		const email = await PostalMime.parse(message.raw);
 
 
 		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);
@@ -113,6 +106,7 @@ export async function email(message, env, ctx) {
 			sendEmail: fromAddress,
 			name: email.from?.name || emailUtils.getName(fromAddress),
 			senderEmail: message.from || '',
+			replyTo: JSON.stringify(normalizeMailboxes(email.replyTo)),
 			subject: email.subject,
 			code,
 			content: email.html,

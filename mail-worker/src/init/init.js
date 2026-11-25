@@ -33,8 +33,16 @@ const dbInit = {
 		await this.v3_2DB(c);
 		await this.v3_3DB(c);
 		await this.v3_4DB(c);
+		await this.v3_5DB(c);
 		await settingService.refresh(c);
 		return c.text('success');
+	},
+
+	async v3_5DB(c) {
+		const { results } = await c.env.db.prepare('PRAGMA table_info(email)').all();
+		if (!results.some(column => column.name === 'reply_to')) {
+			await c.env.db.prepare("ALTER TABLE email ADD COLUMN reply_to TEXT NOT NULL DEFAULT '[]';").run();
+		}
 	},
 
 	async v3_4DB(c) {

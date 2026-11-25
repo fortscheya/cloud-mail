@@ -104,6 +104,8 @@ const en = {
     noSenderDomains: 'No sending domains available. Check the email provider configuration.',
     invalidSenderAddress: 'Enter a valid sender email address.',
     replyButton: 'Reply',
+    replyToAddress: 'Reply-To',
+    noReplyRecipient: 'This message has no valid reply address. Enter the recipient manually.',
     user: 'User',
     searchByContent: 'Enter text to search',
     search: 'Search',

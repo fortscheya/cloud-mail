@@ -1,0 +1,1 @@
+ALTER TABLE email ADD COLUMN reply_to TEXT NOT NULL DEFAULT '[]';

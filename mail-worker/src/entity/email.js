@@ -5,6 +5,7 @@ export const email = sqliteTable('email', {
 	sendEmail: text('send_email'),
 	name: text('name'),
 	senderEmail: text('sender_email').default('').notNull(),
+	replyTo: text('reply_to').default('[]').notNull(),
 	accountId: integer('account_id').notNull(),
 	userId: integer('user_id').notNull(),
 	subject: text('subject'),
