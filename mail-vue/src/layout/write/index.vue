@@ -1,6 +1,6 @@
 <template>
   <div class="send" v-show="show">
-    <div class="write-box">
+    <div class="write-box" :class="{'with-custom-sender': isAdmin && form.customSender}">
       <div class="title">
         <div class="title-left">
           <span class="title-text">
@@ -8,11 +8,24 @@
           </span>
           <span class="sender">{{ $t('sender') }}:</span>
           <span class="sender-name">{{ form.name }}</span>
-          <span class="send-email"><{{ form.sendEmail }}></span>
+          <span class="send-email"><{{ senderAddress }}></span>
+          <el-button v-if="isAdmin" link type="primary" @click="toggleCustomSender">
+            {{ t(form.customSender ? 'useCurrentSender' : 'customSender') }}
+          </el-button>
         </div>
         <div @click="close" style="cursor: pointer;">
           <Icon icon="material-symbols-light:close-rounded" width="22" height="22"/>
         </div>
+      </div>
+      <div v-if="isAdmin && form.customSender" class="sender-settings">
+        <div class="sender-fields">
+          <el-input v-model="form.senderPrefix" :maxlength="64" :placeholder="t('senderPrefix')" :aria-label="t('senderPrefix')" />
+          <el-select v-model="form.senderDomain" :loading="loadingSenderDomains" :placeholder="t('senderDomain')" :aria-label="t('senderDomain')">
+            <el-option v-for="domain in availableSenderDomains" :key="domain" :value="domain" :label="'@' + domain" />
+          </el-select>
+          <el-input v-model="form.name" :placeholder="t('senderDisplayName')" :aria-label="t('senderDisplayName')" />
+        </div>
+        <div class="sender-hint" role="status">{{ senderDomainsError || t(availableSenderDomains.length ? 'customSenderHint' : 'noSenderDomains') }}</div>
       </div>
       <div class="container">
         <el-input-tag  @add-tag="addTagChange" tag-type="primary" @input="inputChange" size="default" v-model="form.receiveEmail" >
@@ -107,7 +120,7 @@ import tinyEditor from '@/components/tiny-editor/index.vue'
 import {h, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, computed} from "vue";
 import {Icon} from "@iconify/vue";
 import {useUserStore} from "@/store/user.js";
-import {emailSend} from "@/request/email.js";
+import {emailSend, senderDomains} from "@/request/email.js";
 import {isEmail} from "@/utils/verify-utils.js";
 import {useAccountStore} from "@/store/account.js";
 import {useEmailStore} from "@/store/email.js";
@@ -157,6 +170,9 @@ const backReply = reactive({
 })
 const form = reactive({
   sendEmail: '',
+  customSender: false,
+  senderPrefix: '',
+  senderDomain: '',
   receiveEmail: [],
   accountId: -1,
   name: '',
@@ -169,6 +185,38 @@ const form = reactive({
   attachments: [],
   draftId: null,
 })
+
+const isAdmin = computed(() => userStore.user.type === 0)
+const availableSenderDomains = ref([])
+const loadingSenderDomains = ref(false)
+const senderDomainsError = ref('')
+const senderAddress = computed(() => isAdmin.value && form.customSender
+  ? `${form.senderPrefix.trim()}@${form.senderDomain}` : form.sendEmail)
+
+async function loadSenderDomains() {
+  loadingSenderDomains.value = true
+  senderDomainsError.value = ''
+  availableSenderDomains.value = []
+  try {
+    availableSenderDomains.value = await senderDomains()
+    if (!form.senderDomain) {
+      const domain = form.sendEmail.split('@')[1]
+      form.senderDomain = availableSenderDomains.value.includes(domain) ? domain : availableSenderDomains.value[0] || ''
+    }
+  } catch (error) {
+    senderDomainsError.value = error.message || t('noSenderDomains')
+  } finally {
+    loadingSenderDomains.value = false
+  }
+}
+
+function toggleCustomSender() {
+  form.customSender = !form.customSender
+  if (form.customSender) {
+    if (!form.senderPrefix) form.senderPrefix = form.sendEmail.split('@')[0]
+    loadSenderDomains()
+  }
+}
 
 const selectRecipientList = ref([])
 
@@ -312,6 +360,19 @@ function chooseFile() {
 
 async function sendEmail() {
 
+  if (isAdmin.value && form.customSender) {
+    const prefix = form.senderPrefix.trim()
+    if (loadingSenderDomains.value || !availableSenderDomains.value.includes(form.senderDomain)) {
+      ElMessage.error(senderDomainsError.value || t('noSenderDomains'))
+      return
+    }
+    if (!isEmail(senderAddress.value) || senderAddress.value.length > 254 || prefix.length > 64 ||
+        prefix.startsWith('.') || prefix.endsWith('.') || prefix.includes('..')) {
+      ElMessage.error(t('invalidSenderAddress'))
+      return
+    }
+  }
+
   if (form.receiveEmail.length === 0) {
     ElMessage({
       message: t('emptyRecipientMsg'),
@@ -362,7 +423,9 @@ async function sendEmail() {
 
   show.value = false
 
-  emailSend(form, (e) => {
+  const sendForm = {...toRaw(form)}
+  if (isAdmin.value && form.customSender) sendForm.fromEmail = senderAddress.value
+  emailSend(sendForm, (e) => {
     percent.value = Math.round((e.loaded * 98) / e.total)
   }).then(result => {
     const emailList = Array.isArray(result) ? result : result.emails
@@ -432,6 +495,9 @@ function addRecipientRecord() {
 }
 
 function resetForm() {
+  form.customSender = false
+  form.senderPrefix = ''
+  form.senderDomain = ''
   form.receiveEmail = []
   form.subject = ''
   form.content = ''
@@ -488,7 +554,9 @@ function openReply(email) {
 
   email.subject = email.subject || ''
 
-  form.receiveEmail.push(email.sendEmail)
+  const ownSent = email.type === 1 && email.userId === userStore.user.userId
+  const recipients = ownSent ? JSON.parse(email.recipient || '[]').map(item => item.address) : [email.sendEmail]
+  form.receiveEmail.push(...recipients)
   form.subject = (
       email.subject.startsWith('Re:') ||
       email.subject.startsWith('Re：') ||
@@ -513,6 +581,17 @@ function openReply(email) {
     </blockquote>`
     open()
 
+    if (isAdmin.value && email.userId === userStore.user.userId) {
+      const replyFrom = ownSent ? email.sendEmail : email.toEmail
+      if (replyFrom && replyFrom !== form.sendEmail) {
+        const [prefix, domain] = replyFrom.split('@')
+        form.customSender = true
+        form.senderPrefix = prefix
+        form.senderDomain = domain.toLowerCase()
+        loadSenderDomains()
+      }
+    }
+
     nextTick(() => {
       backReply.content = editor.value.getContent()
       backReply.subject = form.subject
@@ -530,6 +609,7 @@ function formatImage(content) {
 }
 
 function open() {
+  form.customSender = false
   if (!accountStore.currentAccount.email) {
     form.sendEmail = userStore.user.email;
     form.accountId = userStore.user.account.accountId;
@@ -544,7 +624,8 @@ function open() {
 }
 
 function openDraft(draft) {
-  Object.assign(form, {...draft, manyType: draft.manyType || 'together'})
+  Object.assign(form, {customSender: false, senderPrefix: '', senderDomain: '', ...draft, manyType: draft.manyType || 'together'})
+  if (isAdmin.value && form.customSender) loadSenderDomains()
   defValue.value = ''
   setTimeout(() => defValue.value = form.content)
   show.value = true;
@@ -661,6 +742,27 @@ function close() {
     display: grid;
     grid-template-rows: auto 1fr;
     overflow: hidden;
+    &.with-custom-sender {
+      grid-template-rows: auto auto 1fr;
+    }
+
+    .sender-settings {
+      margin-bottom: 12px;
+      .sender-fields {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr);
+        gap: 8px;
+        @media (max-width: 600px) {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+          > :last-child { grid-column: 1 / -1; }
+        }
+      }
+      .sender-hint {
+        color: var(--el-text-color-secondary);
+        font-size: 12px;
+        margin-top: 6px;
+      }
+    }
     @media (max-width: 1024px) {
       width: 100%;
       height: 100%;
@@ -679,9 +781,10 @@ function close() {
       margin-bottom: 10px;
 
       .title-left {
+        min-width: 0;
         align-items: center;
         display: grid;
-        grid-template-columns: auto auto auto 1fr;
+        grid-template-columns: auto auto auto minmax(0, 1fr) auto;
       }
 
       .title-text {

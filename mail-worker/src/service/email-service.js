@@ -25,6 +25,7 @@ import { att } from '../entity/att';
 import telegramService from './telegram-service';
 import webhookService from './webhook-service';
 import forwardMime from '../utils/forward-mime';
+import verifyUtils from '../utils/verify-utils';
 
 const emailService = {
 
@@ -51,6 +52,9 @@ const emailService = {
 		accountId = Number(accountId);
 		allReceive = Number(allReceive);
 		full = Number(full);
+		// 管理员的已发送跨成员展示；其他列表仍按原归属过滤。
+		const allSenders = type === emailConst.type.SEND &&
+			(await userService.selectById(c, userId))?.email === c.env.admin;
 
 		if (isNaN(type)) {
 			type = 0;
@@ -74,12 +78,15 @@ const emailService = {
 			size = 50;
 		}
 
-		if (isNaN(allReceive)) {
+		if (allSenders) {
+			allReceive = 1;
+		} else if (isNaN(allReceive)) {
 			let accountRow = await accountService.selectById(c, accountId);
 			allReceive = accountRow.allReceive;
 		}
 
 		const filters = this.emailListFilters({
+			allSenders,
 			userId,
 			accountId,
 			type,
@@ -92,6 +99,7 @@ const emailService = {
 			endDate,
 		});
 		const countFilters = this.emailListFilters({
+			allSenders,
 			userId,
 			accountId,
 			type,
@@ -107,6 +115,7 @@ const emailService = {
 		const query = orm(c)
 			.select({
 				...columns,
+				...(allSenders ? { userEmail: user.email } : {}),
 				starId: star.starId
 			})
 			.from(email)
@@ -122,6 +131,7 @@ const emailService = {
 				eq(account.accountId, email.accountId)
 			)
 			.where(and(...filters));
+		if (allSenders) query.leftJoin(user, eq(email.userId, user.userId));
 
 		if (timeSort) {
 			query.orderBy(asc(email.emailId));
@@ -145,7 +155,7 @@ const emailService = {
 			userId: email.userId,
 		}).from(email).where(
 			and(
-				eq(email.userId, userId),
+				allSenders ? undefined : eq(email.userId, userId),
 				eq(email.type, type),
 				eq(email.isDel, isDel.NORMAL),
 				allReceive ? undefined : eq(email.accountId, accountId)
@@ -192,6 +202,7 @@ const emailService = {
 
 	emailListFilters({
 		userId,
+		allSenders = false,
 		accountId,
 		type,
 		allReceive,
@@ -204,12 +215,12 @@ const emailService = {
 		endDate,
 	}) {
 		const conditions = [
-			eq(email.userId, userId),
+			allSenders ? undefined : eq(email.userId, userId),
 			eq(email.type, type),
 			eq(email.isDel, isDel.NORMAL),
 			eq(account.isDel, isDel.NORMAL),
 		];
-		if (!allReceive) {
+		if (!allSenders && !allReceive) {
 			conditions.push(eq(email.accountId, accountId));
 		}
 		if (withCursor && emailId) {
@@ -331,6 +342,15 @@ const emailService = {
 		return orm(c).insert(email).values({ ...params }).returning().get();
 	},
 
+	// 只返回配置的域名；服务商仍校验域名的实际发信状态。
+	async senderDomains(c, userId) {
+		const userRow = await userService.selectById(c, userId);
+		if (!userRow || userRow.email !== c.env.admin) throw new BizError(t('unauthorized'), 403);
+		const { domainList } = await settingService.query(c);
+		return domainList.map(domain => domain.slice(1).toLowerCase()).filter(domain =>
+			c.env.email || settingService.resendToken(c, domain));
+	},
+
 	// 发送入口：公共校验、参数准备、渠道选择和结果汇总。
 	async send(c, params, userId) {
 		let {
@@ -356,6 +376,8 @@ const emailService = {
 
 		const userRow = await userService.selectById(c, userId);
 		const roleRow = await roleService.selectById(c, userRow.type);
+		const customSender = params.fromEmail !== undefined;
+		if (customSender && userRow.email !== c.env.admin) throw new BizError(t('unauthorized'), 403);
 
 		//判断接收方是不是全部为站内邮箱
 		const allInternal = receiveEmail.every(email => {
@@ -392,7 +414,10 @@ const emailService = {
 
 		}
 
-		const accountRow = await accountService.selectById(c, accountId);
+		// 临时地址不注册账号；邮件与附件均归管理员主邮箱，忽略客户端账号归属。
+		const accountRow = customSender
+			? await accountService.selectByEmailIncludeDel(c, userRow.email)
+			: await accountService.selectById(c, accountId);
 
 		if (!accountRow) {
 			throw new BizError(t('senderAccountNotExist'));
@@ -400,6 +425,24 @@ const emailService = {
 
 		if (accountRow.userId !== userId) {
 			throw new BizError(t('sendEmailNotCurUser'));
+		}
+		accountId = accountRow.accountId;
+		let senderEmail = accountRow.email;
+		if (customSender) {
+			senderEmail = typeof params.fromEmail === 'string' ? params.fromEmail.trim() : '';
+			const prefix = emailUtils.getName(senderEmail);
+			if (!verifyUtils.isEmail(senderEmail) || senderEmail.length > 254 || prefix.length > 64 ||
+				prefix.startsWith('.') || prefix.endsWith('.') || prefix.includes('..')) {
+				throw new BizError(t('notEmail'), 400);
+			}
+			const senderDomain = emailUtils.getDomain(senderEmail).toLowerCase();
+			senderEmail = `${prefix}@${senderDomain}`;
+			if (!domainList.some(domain => domain.toLowerCase() === '@' + senderDomain)) {
+				throw new BizError(t('noDomainPermSend'), 403);
+			}
+			if (!(await this.senderDomains(c, userId)).includes(senderDomain)) {
+				throw new BizError(t('noSendProvider'), 503);
+			}
 		}
 
 		if (c.env.admin !== userRow.email) {
@@ -410,7 +453,7 @@ const emailService = {
 
 		}
 
-		const domain = emailUtils.getDomain(accountRow.email);
+		const domain = emailUtils.getDomain(senderEmail);
 		const useCloudflareEmail = !!c.env.email;
 		const resendToken = !allInternal && !useCloudflareEmail
 			? settingService.resendToken(c, domain) : undefined;
@@ -422,7 +465,7 @@ const emailService = {
 
 		//没有发件人名字自动截取
 		if (!name) {
-			name = emailUtils.getName(accountRow.email);
+			name = emailUtils.getName(senderEmail);
 		}
 
 		let emailRow = {
@@ -442,7 +485,7 @@ const emailService = {
 
 		const sendParams = {
 			name,
-			accountEmail: accountRow.email,
+			accountEmail: senderEmail,
 			receiveEmail,
 			subject,
 			text,
@@ -465,7 +508,7 @@ const emailService = {
 			separate, allInternal, useCloudflareEmail, resendToken, sendParams,
 			saveParams: {
 				accountId, userId, name, subject, text, html,
-				sendEmail: accountRow.email,
+				sendEmail: senderEmail,
 				messageId: emailRow.messageId,
 				sendType, useCloudflareEmail, roleRow, r2Domain,
 				imageDataList, attachments

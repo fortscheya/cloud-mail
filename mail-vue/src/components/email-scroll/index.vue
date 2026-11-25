@@ -4,7 +4,7 @@
       <el-checkbox
           v-model="checkAll"
           :indeterminate="isIndeterminate"
-          :disabled="!emailList.length || loading"
+          :disabled="!emailList.some(canModifyEmail) || loading"
           @change="handleCheckAllChange"
       >
       </el-checkbox>
@@ -38,7 +38,7 @@
                         :key="keyCount"
         >
           <template #default="{ data: item, index }" >
-            <div :class="['email-row', props.type, { 'right-checked': item.rightChecked }]"
+            <div :class="['email-row', props.type, { 'right-checked': item.rightChecked, 'with-user-info': showUserInfo }]"
                  :data-checked="item.checked"
                  @click="jumpDetails(item)"
                  v-if="!item.expand"
@@ -47,13 +47,13 @@
             >
               <el-checkbox :class=" props.type === 'all-email' ? 'all-email-checkbox' : 'checkbox'"
                            v-model="item.checked"
-                           :disabled="!item.checked && isSelectMax"
+                           :disabled="!canModifyEmail(item) || (!item.checked && isSelectMax)"
                            @click.stop></el-checkbox>
-              <div @click.stop="starChange(item)" class="pc-star" v-if="showStar">
+              <div @click.stop="starChange(item)" class="pc-star" v-if="showStar && canModifyEmail(item)">
                 <Icon v-if="item.isStar" icon="fluent-color:star-16" width="20" height="20"/>
                 <Icon v-else icon="solar:star-line-duotone" width="18" height="18"/>
               </div>
-              <div v-if="!showStar"></div>
+              <div v-if="!showStar || !canModifyEmail(item)" :class="{'pc-star': showStar}"></div>
               <div class="title" :class="accountShow ? 'title-column' : 'title-column'">
 
                 <div class="email-sender" :style=" (showStatus ? 'gap: 10px;' : '') + ((item.unread === EmailUnreadEnum.UNREAD && showUnread)  ? 'font-weight: bold' : '')">
@@ -188,7 +188,7 @@
               </div>
             </template>
           </el-dropdown-item>
-          <el-dropdown-item v-if="['email','send', 'star'].includes(props.type)" @click="starChange(rightClickEmail)">
+          <el-dropdown-item v-if="['email','send', 'star'].includes(props.type) && canModifyEmail(rightClickEmail)" @click="starChange(rightClickEmail)">
             <template #default>
               <div class="right-dropdown-item">
                 <Icon icon="solar:star-line-duotone" width="19" height="19"/>
@@ -220,7 +220,7 @@
               </div>
             </template>
           </el-dropdown-item>
-          <el-dropdown-item @click="rightDelete(rightClickEmail.emailId)">
+          <el-dropdown-item v-if="canModifyEmail(rightClickEmail)" @click="rightDelete(rightClickEmail.emailId)">
             <template #default>
               <div class="right-dropdown-item">
                 <Icon icon="uiw:delete" width="16" height="20" style="margin-left: 1px;margin-right: 3px" />
@@ -249,6 +249,10 @@ import { UseVirtualList } from '@vueuse/components'
 import { useScroll } from '@vueuse/core'
 
 const props = defineProps({
+  canModifyEmail: {
+    type: Function,
+    default: () => true
+  },
   getEmailList: Function,
   emailDelete: Function,
   emailRead: Function,
@@ -404,7 +408,7 @@ const list = computed(() => {
 })
 
 const itemHeight = computed(() => {
-    if (props.type === 'all-email') {
+    if (props.type === 'all-email' || props.showUserInfo) {
       return isMobile.value ? 132 : 65;
     } else  {
       return isMobile.value ? 83 : 48;
@@ -572,6 +576,7 @@ const accountShow = computed(() => {
 })
 
 function starChange(email) {
+  if (!props.canModifyEmail(email)) return
 
   if (!email.isStar) {
 
@@ -761,7 +766,7 @@ function handleCheckAllChange(val) {
   if (val) {
     let count = 0;
     emailList.forEach(item => {
-      if (count < MAX_SELECT_COUNT) {
+      if (props.canModifyEmail(item) && count < MAX_SELECT_COUNT) {
         item.checked = true;
         count++;
       } else {
@@ -776,7 +781,7 @@ function handleCheckAllChange(val) {
 
 // 获取选中的邮件列表id
 function getSelectedMailsIds() {
-  return emailList.filter(item => item.checked).map(item => item.emailId);
+  return emailList.filter(item => item.checked && props.canModifyEmail(item)).map(item => item.emailId);
 }
 
 function getSelectedDraftsIds() {
@@ -787,7 +792,8 @@ function updateCheckStatus() {
   const checkedCount = emailList.filter(item => item.checked).length;
   checkedEmailCount.value = checkedCount;
   const atMax = checkedCount >= MAX_SELECT_COUNT;
-  checkAll.value = emailList.length > 0 && (checkedCount === emailList.length || atMax);
+  const selectableCount = emailList.filter(props.canModifyEmail).length;
+  checkAll.value = selectableCount > 0 && (checkedCount === selectableCount || atMax);
   isIndeterminate.value = checkedCount > 0 && !checkAll.value;
 }
 
@@ -1047,7 +1053,7 @@ function renderHighlight(value) {
     /* 触屏 */
     user-select: none;
   }
-  &.all-email {
+  &.all-email, &.with-user-info {
     height: 65px;
     @media (max-width: 1366px) {
       height: 132px;

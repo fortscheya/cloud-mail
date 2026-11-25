@@ -34,3 +34,8 @@ app.put('/email/read', async (c) => {
 	return c.json(result.ok());
 })
 
+
+app.get('/email/senderDomains', async (c) => {
+	const domains = await emailService.senderDomains(c, userContext.getUserId(c));
+	return c.json(result.ok(domains));
+});

@@ -55,7 +55,8 @@ CREATE TABLE oauth (user_id INTEGER,username TEXT,trust_level INTEGER,avatar TEX
 CREATE TABLE perm (perm_id INTEGER PRIMARY KEY,perm_key TEXT,type INTEGER DEFAULT 2);
 CREATE TABLE role_perm (id INTEGER PRIMARY KEY,role_id INTEGER,perm_id INTEGER);
 CREATE TABLE role (role_id INTEGER PRIMARY KEY,name TEXT,key TEXT,description TEXT,ban_email TEXT DEFAULT '',ban_email_type INTEGER DEFAULT 0,avail_domain TEXT DEFAULT '',sort INTEGER,is_default INTEGER,create_time TEXT DEFAULT CURRENT_TIMESTAMP,user_id INTEGER,send_count INTEGER,send_type TEXT DEFAULT 'count',account_count INTEGER);
-CREATE TABLE attachments (att_id INTEGER PRIMARY KEY,user_id INTEGER,email_id INTEGER,account_id INTEGER,key TEXT);
+CREATE TABLE attachments (att_id INTEGER PRIMARY KEY,user_id INTEGER,email_id INTEGER,account_id INTEGER,key TEXT,filename TEXT,mime_type TEXT,size INTEGER,status INTEGER DEFAULT 0,type INTEGER DEFAULT 0,disposition TEXT,related TEXT,content_id TEXT,encoding TEXT,create_time TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE star (star_id INTEGER PRIMARY KEY,user_id INTEGER,email_id INTEGER,create_time TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE email (email_id INTEGER PRIMARY KEY,send_email TEXT,name TEXT,sender_email TEXT DEFAULT '',account_id INTEGER,user_id INTEGER,subject TEXT,code TEXT DEFAULT '',text TEXT,content TEXT,cc TEXT DEFAULT '[]',bcc TEXT DEFAULT '[]',recipient TEXT DEFAULT '[]',to_email TEXT DEFAULT '',to_name TEXT DEFAULT '',in_reply_to TEXT DEFAULT '',relation TEXT DEFAULT '',message_id TEXT DEFAULT '',type INTEGER DEFAULT 0,status INTEGER DEFAULT 0,resend_email_id TEXT,message TEXT,unread INTEGER DEFAULT 0,create_time TEXT DEFAULT CURRENT_TIMESTAMP,is_del INTEGER DEFAULT 0);
 INSERT INTO role(role_id,name,is_default) VALUES(1,'default',1);
 INSERT INTO email(email_id,user_id,account_id,resend_email_id,status) VALUES(1,2,1,'known-email',0);
@@ -135,6 +136,98 @@ describe('Resend configuration availability', () => {
 		expect(JSON.stringify(body)).not.toContain('new-test-only-fixture');
 		delete bindings.RESEND_TOKENS;
 		expect(settingService.resendToken({ env: bindings }, 'example.test')).toBeUndefined();
+	});
+});
+
+describe('Administrator sending and sent-mail visibility', () => {
+	beforeEach(async () => {
+		await env.db.exec(`
+INSERT INTO user(user_id,email,password,salt) VALUES(1,'admin@example.test','unused','unused'),(2,'member@example.test','unused','unused');
+INSERT INTO account(account_id,user_id,email,name) VALUES(1,1,'admin@example.test','Admin'),(2,2,'member@example.test','Member');
+INSERT INTO perm(perm_id,perm_key) VALUES(1,'email:send'),(2,'email:delete');
+INSERT INTO role_perm(id,role_id,perm_id) VALUES(1,1,1),(2,1,2);
+INSERT INTO email(email_id,user_id,account_id,send_email,name,subject,text,type) VALUES(10,1,1,'admin@example.test','Admin','Admin sent','admin message',1),(11,2,2,'member@example.test','Member','Member sent','member message',1);
+`);
+	});
+	const form = (extra = {}) => ({ accountId: 1, fromEmail: 'unregistered@example.test',
+		receiveEmail: ['outside@other.test'], content: '<p>message</p>', text: 'message', subject: 'Custom sender', ...extra });
+
+	it('lists only configured site sending domains for administrators without exposing keys', async () => {
+		bindings.domain = ['example.test', 'receiving.test'];
+		bindings.RESEND_TOKENS = JSON.stringify({ 'example.test': 'fixture-key', 'outside.test': 'outside-key' });
+		const response = await request('/api/email/senderDomains', { token: await session() });
+		expect((await response.json()).data).toEqual(['example.test']);
+		expect((await request('/api/email/senderDomains', { token: await session(2, 'member@example.test') })).status).toBe(403);
+		expect((await request('/api/email/senderDomains')).status).toBe(401);
+	});
+	it('sends an unregistered address through the CF channel and retains administrator and attachment ownership', async () => {
+		bindings.email = { send: vi.fn().mockResolvedValue({ messageId: 'cf-custom' }) };
+		const response = await request('/api/email/send', { token: await session(), body: form({ accountId: 2,
+			attachments: [{ content: btoa('attachment'), filename: 'note.txt', type: 'text/plain' }] }) });
+		const body = await response.json();
+		expect(body.code).toBe(200);
+		expect(bindings.email.send.mock.calls[0][0].from.email).toBe('unregistered@example.test');
+		const saved = body.data[0];
+		expect(saved).toMatchObject({ userId: 1, accountId: 1, sendEmail: 'unregistered@example.test' });
+		expect(saved.attList[0]).toMatchObject({ userId: 1, accountId: 1, emailId: saved.emailId });
+		expect(await env.db.prepare('SELECT count(*) AS n FROM account').first()).toEqual({ n: 2 });
+		expect((await request('/' + saved.attList[0].key, { token: await session() })).status).toBe(200);
+		expect((await request('/' + saved.attList[0].key, { token: await session(2, 'member@example.test') })).status).toBe(404);
+	});
+	it('uses the selected Resend domain and actual From without registering a mailbox', async () => {
+		bindings.RESEND_TOKENS = JSON.stringify({ 'example.test': 'fixture-key' });
+		const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 'resend-custom' }), { headers: { 'Content-Type': 'application/json' } }));
+		try {
+			const response = await request('/api/email/send', { token: await session(), body: form({ name: 'Notice' }) });
+			expect((await response.json()).data[0]).toMatchObject({ sendEmail: 'unregistered@example.test', userId: 1, accountId: 1 });
+			expect(JSON.parse(fetch.mock.calls[0][1].body).from).toBe('Notice <unregistered@example.test>');
+			expect(await env.db.prepare('SELECT count(*) AS n FROM account').first()).toEqual({ n: 2 });
+		} finally { fetch.mockRestore(); }
+	});
+	it('rejects member custom senders even with a valid owned account', async () => {
+		bindings.email = { send: vi.fn() };
+		const response = await request('/api/email/send', { token: await session(2, 'member@example.test'), body: form({ accountId: 2 }) });
+		expect(response.status).toBe(403);
+		expect(bindings.email.send).not.toHaveBeenCalled();
+	});
+	it.each(['.bad@example.test', 'bad..dots@example.test', 'a\r\nBcc:x@example.test', 'a'.repeat(65) + '@example.test', ''])('rejects malformed custom address %j before sending', async fromEmail => {
+		bindings.email = { send: vi.fn() };
+		expect((await request('/api/email/send', { token: await session(), body: form({ fromEmail }) })).status).toBe(400);
+		expect(bindings.email.send).not.toHaveBeenCalled();
+	});
+	it('rejects external sender domains and site domains lacking a sending channel', async () => {
+		bindings.email = { send: vi.fn() };
+		expect((await request('/api/email/send', { token: await session(), body: form({ fromEmail: 'notice@gmail.com' }) })).status).toBe(403);
+		expect(bindings.email.send).not.toHaveBeenCalled();
+		delete bindings.email;
+		expect((await request('/api/email/send', { token: await session(), body: form() })).status).toBe(503);
+	});
+	it('keeps the original sender ownership check when no custom sender is requested', async () => {
+		const body = form({ accountId: 2 });
+		delete body.fromEmail;
+		const response = await request('/api/email/send', { token: await session(), body });
+		expect((await response.json()).message).toContain('发件人邮箱非当前用户所有');
+	});
+	it('shows all members in administrator sent mail with pagination, search and full details', async () => {
+		const token = await session();
+		const query = '/api/email/list?type=1&accountId=1&allReceive=0&size=1';
+		const first = (await (await request(query + '&full=0', { token })).json()).data;
+		expect(first.total).toBe(2);
+		expect(first.list[0]).toMatchObject({ emailId: 11, userId: 2, userEmail: 'member@example.test', sendEmail: 'member@example.test' });
+		expect(first.list[0]).not.toHaveProperty('content');
+		const next = (await (await request(query + '&full=1&emailId=11', { token })).json()).data;
+		expect(next.total).toBe(2);
+		expect(next.list[0]).toMatchObject({ emailId: 10, text: 'admin message' });
+		const search = (await (await request(query + '&full=1&searchType=senderAddress&text=member', { token })).json()).data;
+		expect(search.total).toBe(1);
+		expect(search.list.map(item => item.emailId)).toEqual([11]);
+	});
+	it('does not widen member sent mail or administrator inbox scope', async () => {
+		const member = await session(2, 'member@example.test');
+		const result = (await (await request('/api/email/list?type=1&accountId=1&allReceive=1&allSenders=1&size=50&full=1', { token: member })).json()).data;
+		expect(result.list.map(item => item.emailId)).toEqual([11]);
+		const inbox = (await (await request('/api/email/list?type=0&accountId=1&allReceive=1&size=50&full=1', { token: await session() })).json()).data;
+		expect(inbox.list).toEqual([]);
 	});
 });
 

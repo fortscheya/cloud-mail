@@ -5,6 +5,9 @@
                :getEmailList="getEmailList"
                :emailDelete="emailDelete"
                :star-add="starAdd"
+               :show-user-info="isAdmin"
+               :show-account-icon="!isAdmin"
+               :can-modify-email="canModifyEmail"
                show-status
                actionLeft="4px"
                :star-cancel="starCancel"
@@ -19,10 +22,11 @@
 import {useAccountStore} from "@/store/account.js";
 import {useEmailStore} from "@/store/email.js";
 import {useSendStore} from "@/store/send.js";
+import {useUserStore} from "@/store/user.js";
 import emailScroll from "@/components/email-scroll/index.vue"
 import {emailList, emailDelete} from "@/request/email.js";
 import {starAdd, starCancel} from "@/request/star.js";
-import {defineOptions, onMounted, ref, watch} from "vue";
+import {computed, defineOptions, onMounted, ref, watch} from "vue";
 import router from "@/router/index.js";
 
 defineOptions({
@@ -32,6 +36,9 @@ defineOptions({
 const emailStore = useEmailStore();
 const sendStore = useSendStore();
 const accountStore = useAccountStore();
+const userStore = useUserStore();
+const isAdmin = computed(() => userStore.user.type === 0)
+const canModifyEmail = email => email.userId === userStore.user.userId
 const sendScroll = ref({})
 onMounted(() => {
   emailStore.sendScroll = sendScroll;
@@ -52,7 +59,7 @@ watch(
 function jumpContent(email) {
   emailStore.contentData.email = emailStore.toContentEmail(email)
   emailStore.contentData.delType = 'logic'
-  emailStore.contentData.showStar = true
+  emailStore.contentData.showStar = canModifyEmail(email)
   emailStore.contentData.showReply = true
   router.push({name: 'content', params: {mailbox: 'sent'}})
 }
