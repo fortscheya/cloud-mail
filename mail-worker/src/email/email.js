@@ -44,8 +44,9 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
-		// Parse the byte stream directly so split UTF-8 header characters survive.
-		const email = await PostalMime.parse(message.raw);
+		// Keep the exact bytes for .eml downloads, including original headers and MIME.
+		const raw = await new Response(message.raw).arrayBuffer();
+		const email = await PostalMime.parse(raw);
 
 
 		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);
@@ -136,7 +137,7 @@ export async function email(message, env, ctx) {
 			}
 		}
 
-		let emailRow = await emailService.receive({ env }, params, cidAttachments, r2Domain);
+		let emailRow = await emailService.receive({ env }, params, cidAttachments, r2Domain, raw);
 
 		attachments.forEach(attachment => {
 			attachment.emailId = emailRow.emailId;

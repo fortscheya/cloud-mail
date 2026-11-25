@@ -29,3 +29,8 @@ export function emailSend(form,progress) {
 export function senderDomains() {
     return http.get('/email/senderDomains')
 }
+
+export function emailRaw(emailId) {
+    return http.get('/email/raw', {params: {emailId}, responseType: 'blob',
+        validateStatus: status => status >= 200 && status < 500})
+}

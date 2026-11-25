@@ -26,6 +26,7 @@ import telegramService from './telegram-service';
 import webhookService from './webhook-service';
 import forwardMime from '../utils/forward-mime';
 import verifyUtils from '../utils/verify-utils';
+import rawEmailService from './raw-email-service';
 
 const emailService = {
 
@@ -337,9 +338,9 @@ const emailService = {
 			.run();
 	},
 
-	receive(c, params, cidAttList, r2domain) {
+	receive(c, params, cidAttList, r2domain, raw) {
 		params.content = this.imgReplace(params.content, cidAttList, r2domain)
-		return orm(c).insert(email).values({ ...params }).returning().get();
+		return rawEmailService.insert(c, params, raw);
 	},
 
 	// 只返回配置的域名；服务商仍校验域名的实际发信状态。
@@ -561,7 +562,9 @@ const emailService = {
 			: [sendParams.receiveEmail];
 		for (const receiveEmail of recipientGroups) {
 			const emailResult = await this.saveSentEmail(c, { ...saveParams, receiveEmail });
-			const emailRowList = await this.HandleOnSiteEmail(c, receiveEmail, emailResult, emailResult.attList);
+			const raw = new TextEncoder().encode(forwardMime.build({ ...sendParams, receiveEmail,
+				attachments: await this.toCloudflareAttachments(sendParams.attachments || []) }));
+			const emailRowList = await this.HandleOnSiteEmail(c, receiveEmail, emailResult, emailResult.attList, raw);
 			await this.forwardOnSiteEmail(c, emailRowList, { sendParams: { ...sendParams, receiveEmail } });
 			yield { emails: [emailResult] };
 		}
@@ -866,7 +869,7 @@ const emailService = {
 	},
 
 	//处理站内邮件发送
-	async HandleOnSiteEmail(c, receiveEmail, sendEmailData, attList) {
+	async HandleOnSiteEmail(c, receiveEmail, sendEmailData, attList, raw) {
 
 		const { noRecipient  } = await settingService.query(c);
 
@@ -973,7 +976,7 @@ const emailService = {
 
 		for (const emailData of receiveEmailList) {
 
-			const emailRow = await orm(c).insert(email).values(emailData).returning().get();
+			const emailRow = await rawEmailService.insert(c, emailData, raw);
 			emailRowList.push(emailRow);
 
 			//设置附件保存
@@ -1142,12 +1145,14 @@ const emailService = {
 	async physicsDelete(c, params) {
 		let { emailIds } = params;
 		emailIds = emailIds.split(',').map(Number);
+		await rawEmailService.removeWhere(c, inArray(email.emailId, emailIds));
 		await attService.removeByEmailIds(c, emailIds);
 		await starService.removeByEmailIds(c, emailIds);
 		await orm(c).delete(email).where(inArray(email.emailId, emailIds)).run();
 	},
 
 	async physicsDeleteUserIds(c, userIds) {
+		await rawEmailService.removeWhere(c, inArray(email.userId, userIds));
 		await attService.removeByUserIds(c, userIds);
 		await orm(c).delete(email).where(inArray(email.userId, userIds)).run();
 	},
@@ -1413,12 +1418,14 @@ const emailService = {
 			return;
 		}
 
+		await rawEmailService.removeWhere(c, inArray(email.emailId, emailIds));
 		await attService.removeByEmailIds(c, emailIds);
 
 		await orm(c).delete(email).where(conditions.length > 1 ? and(...conditions) : conditions[0]).run();
 	},
 
 	async physicsDeleteByAccountId(c, accountId) {
+		await rawEmailService.removeWhere(c, eq(email.accountId, accountId));
 		await attService.removeByAccountId(c, accountId);
 		await orm(c).delete(email).where(eq(email.accountId, accountId)).run();
 	},

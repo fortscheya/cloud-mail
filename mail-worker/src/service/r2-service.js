@@ -21,9 +21,9 @@ const r2Service = {
 		return 'KV';
 	},
 
-	async putObj(c, key, content, metadata) {
+	async putObj(c, key, content, metadata, storageType) {
 
-		const storageType = await this.storageType(c);
+		storageType ||= await this.storageType(c);
 
 		if (storageType === 'KV') {
 			await kvObjService.putObj(c, key, content, metadata);
@@ -41,8 +41,8 @@ const r2Service = {
 
 	},
 
-	async getObj(c, key) {
-		const storageType = await this.storageType(c);
+	async getObj(c, key, storageType) {
+		storageType ||= await this.storageType(c);
 
 		if (storageType === 'KV') {
 			return await kvObjService.getObj(c, key);
@@ -99,9 +99,9 @@ const r2Service = {
 		}
 	},
 
-	async delete(c, key) {
+	async delete(c, key, storageType) {
 
-		const storageType = await this.storageType(c);
+		storageType ||= await this.storageType(c);
 
 		if (storageType === 'KV') {
 			await kvObjService.deleteObj(c, key);

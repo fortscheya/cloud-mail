@@ -23,6 +23,7 @@ const zh = {
 	daySendLack: '当日剩余发送次数不足',
 	totalSendLack: '剩余发送次数不足',
 	senderAccountNotExist: '发件人邮箱不存在',
+	rawEmailUnavailable: '这封邮件没有已保存的原文，无法下载',
 	noResendToken: 'Resend未配置，只能给站内邮箱发件',
 	noSendProvider: '发信服务未配置，只能给站内邮箱发件',
 	resendConfigInvalid: 'Resend 发信暂不可用：请将 Cloudflare 的 RESEND_TOKENS Secret 配置为域名到发送密钥的 JSON 对象',

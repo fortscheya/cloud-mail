@@ -16,7 +16,13 @@ http.interceptors.request.use(config => {
     return config
 })
 
-http.interceptors.response.use((res) => {
+http.interceptors.response.use(async (res) => {
+
+        if (res.config.responseType === 'blob') {
+            if (res.status === 200 && res.headers['content-type']?.startsWith('message/rfc822')) return res.data
+            try { res.data = JSON.parse(await res.data.text()) }
+            catch { res.data = {code: 500, message: i18n.global.t('downloadOriginalFailed')} }
+        }
 
         return new Promise((resolve, reject) => {
 

@@ -23,6 +23,7 @@ const en = {
 	daySendLack: 'Not enough remaining sends today',
 	totalSendLack: 'Not enough total remaining sends',
 	senderAccountNotExist: 'Sender email does not exist',
+	rawEmailUnavailable: 'No original message was saved for this email',
 	noResendToken: 'Resend API token not configured',
 	noSendProvider: 'Email sending service is not configured',
 	resendConfigInvalid: 'Resend sending is unavailable: configure the RESEND_TOKENS Worker Secret as a JSON object mapping domains to sending keys',

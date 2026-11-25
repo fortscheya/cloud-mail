@@ -3,6 +3,13 @@ import emailService from '../service/email-service';
 import result from '../model/result';
 import userContext from '../security/user-context';
 import attService from '../service/att-service';
+import rawEmailService from '../service/raw-email-service';
+
+app.get('/email/raw', async (c) => {
+	const response = await rawEmailService.download(c, c.req.query('emailId'), userContext.getUserId(c));
+	c.header('Cache-Control', 'private, no-store');
+	return response;
+});
 
 app.get('/email/list', async (c) => {
 	const data = await emailService.list(c, c.req.query(), userContext.getUserId(c));

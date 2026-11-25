@@ -12,6 +12,12 @@ import settingSchema from '../src/entity/setting';
 import { getTableConfig } from 'drizzle-orm/sqlite-core';
 import { dbInit } from '../src/init/init';
 import replyToMigration from '../migrations/0001_add_email_reply_to.sql?raw';
+import archiveMigration from '../migrations/0002_add_raw_email_archive.sql?raw';
+import rawEmailService from '../src/service/raw-email-service';
+import r2Service from '../src/service/r2-service';
+import s3Service from '../src/service/s3-service';
+import emailService from '../src/service/email-service';
+import PostalMime from 'postal-mime';
 import { getReplyRecipients, normalizeMailboxes } from '../../shared/mail-addresses.js';
 
 const password = 'test-only-Strong-Password-47';
@@ -65,6 +71,7 @@ INSERT INTO role(role_id,name,is_default) VALUES(1,'default',1);
 INSERT INTO email(email_id,user_id,account_id,resend_email_id,status) VALUES(1,2,1,'known-email',0);
 `);
 	await env.db.exec(replyToMigration);
+	await env.db.exec(archiveMigration);
 	await env.db.prepare('INSERT INTO attachments(att_id,user_id,email_id,key) VALUES(1,2,1,?)').bind(key).run();
 	await env.kv.put('setting:', JSON.stringify({ resendTokens: { 'example.test': 'compromised-fixture-only' }, emailPrefixFilter: '', bucket: '', endpoint: '', s3AccessKey: '', s3SecretKey: '' }));
 	await env.kv.put('public_key:', 'old-shared-token');
@@ -140,6 +147,151 @@ describe('Resend configuration availability', () => {
 		expect(JSON.stringify(body)).not.toContain('new-test-only-fixture');
 		delete bindings.RESEND_TOKENS;
 		expect(settingService.resendToken({ env: bindings }, 'example.test')).toBeUndefined();
+	});
+});
+
+describe('Original email archives', () => {
+	const source = ['Received: from original.test by routing.test;', '\tThu, 26 Nov 2026 08:00:00 +0000',
+		'From: Sender <sender@other.test>', 'To: owner@example.test', 'Reply-To: Reply Desk <reply@other.test>',
+		'Subject: Original MIME fixture', 'X-Preserve-This: Case AND spaces  ', 'MIME-Version: 1.0',
+		'Content-Type: multipart/mixed; boundary="raw-fixture"', '', '--raw-fixture',
+		'Content-Type: text/plain; charset=utf-8', '', '原始正文', '--raw-fixture',
+		'Content-Type: application/octet-stream', 'Content-Disposition: attachment; filename="binary.bin"',
+		'Content-Transfer-Encoding: base64', '', 'AP+ADQo=', '--raw-fixture--', ''].join('\r\n');
+	const sourceBytes = new TextEncoder().encode(source);
+	beforeEach(async () => {
+		await env.db.exec(`
+INSERT INTO user(user_id,email,password,salt) VALUES(1,'admin@example.test','unused','unused'),(2,'owner@example.test','unused','unused'),(3,'other@example.test','unused','unused');
+INSERT INTO account(account_id,user_id,email,name) VALUES(1,1,'admin@example.test','Admin'),(2,2,'owner@example.test','Owner'),(3,3,'other@example.test','Other');
+INSERT INTO perm(perm_id,perm_key) VALUES(1,'email:send'),(2,'email:delete');
+INSERT INTO role_perm(id,role_id,perm_id) VALUES(1,1,1),(2,1,2);
+`);
+	});
+	async function receive(to = 'owner@example.test', raw = sourceBytes) {
+		const message = { from: 'bounce@transport.test', to, raw: new Response(raw).body, setReject: vi.fn() };
+		await worker.email(message, bindings, {});
+		expect(message.setReject).not.toHaveBeenCalled();
+		return env.db.prepare('SELECT email_id,raw_key,raw_storage FROM email WHERE raw_key != ? ORDER BY email_id DESC LIMIT 1').bind('').first();
+	}
+	async function download(id, token = undefined) { return request('/api/email/raw?emailId=' + id, { token }); }
+
+	it('keeps existing records and supports repeated initialization after the archive migration', async () => {
+		await dbInit.v3_6DB({ env: bindings });
+		await dbInit.v3_6DB({ env: bindings });
+		expect(await env.db.prepare('SELECT resend_email_id,raw_key,raw_storage FROM email WHERE email_id=1').first())
+			.toEqual({ resend_email_id: 'known-email', raw_key: '', raw_storage: '' });
+	});
+	it('stores and downloads exact original bytes including headers, Reply-To and attachments', async () => {
+		const row = await receive();
+		expect(row.raw_storage).toBe('KV');
+		const response = await download(row.email_id, await session(2, 'owner@example.test'));
+		expect(response.status).toBe(200);
+		expect(new Uint8Array(await response.arrayBuffer())).toEqual(sourceBytes);
+		expect(response.headers.get('content-type')).toBe('message/rfc822');
+		expect(response.headers.get('content-disposition')).toBe(`attachment; filename="email-${row.email_id}.eml"`);
+		expect(response.headers.get('cache-control')).toBe('private, no-store');
+		expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+		expect(response.headers.get('content-security-policy')).toBe('sandbox');
+		const list = (await (await request('/api/email/list?type=0&accountId=2&allReceive=1&size=10&full=0', { token: await session(2, 'owner@example.test') })).json()).data;
+		expect(list.list[0].hasRaw).toBe(1);
+		expect(list.list[0]).not.toHaveProperty('rawKey');
+		const full = (await (await request('/api/email/list?type=0&accountId=2&allReceive=1&size=10&full=1', { token: await session(2, 'owner@example.test') })).json()).data;
+		expect(full.list[0].hasRaw).toBe(1);
+		expect(full.list[0]).not.toHaveProperty('rawKey');
+		expect(full.list[0]).not.toHaveProperty('rawStorage');
+	});
+	it('allows only the owner or administrator and blocks direct object aliases and revoked sessions', async () => {
+		const row = await receive();
+		const owner = await session(2, 'owner@example.test');
+		expect((await download(row.email_id, await session())).status).toBe(200);
+		expect((await download(row.email_id)).status).toBe(401);
+		expect((await download(row.email_id, await session(3, 'other@example.test'))).status).toBe(404);
+		expect((await request('/api/email/raw?emailId=' + row.email_id, { cookie: `${ASSET_COOKIE}=${owner}` })).status).toBe(401);
+		for (const alias of ['/oss/', '/api/oss/']) expect((await request(alias + row.raw_key, { token: owner })).status).toBe(404);
+		await env.kv.delete('auth-uid:2');
+		expect((await download(row.email_id, owner)).status).toBe(401);
+	});
+	it('makes unregistered-recipient archives available only to the administrator', async () => {
+		const row = await receive('unregistered@example.test');
+		expect((await download(row.email_id, await session())).status).toBe(200);
+		expect((await download(row.email_id, await session(2, 'owner@example.test'))).status).toBe(404);
+	});
+	it('returns an unavailable result for old messages, invalid IDs and missing objects', async () => {
+		const owner = await session(2, 'owner@example.test');
+		for (const id of [1, -1, 'invalid', '1 OR 1=1']) expect((await download(encodeURIComponent(id), owner)).status).toBe(404);
+		const row = await receive();
+		await env.kv.delete(row.raw_key);
+		expect((await download(row.email_id, owner)).status).toBe(404);
+	});
+	it('keeps logical deletions but cleans up only the permanently deleted message archive', async () => {
+		const first = await receive();
+		const second = await receive('other@example.test');
+		await emailService.delete({ env: bindings }, { emailIds: String(first.email_id) }, 2);
+		expect(await env.kv.get(first.raw_key)).not.toBeNull();
+		await emailService.physicsDelete({ env: bindings }, { emailIds: String(first.email_id) });
+		expect(await env.kv.get(first.raw_key)).toBeNull();
+		expect(await env.kv.get(second.raw_key)).not.toBeNull();
+	});
+	it.each(['user', 'account', 'batch', 'autoClean'])('cleans up archives with the existing %s deletion path', async mode => {
+		const row = await receive();
+		const c = { env: bindings };
+		if (mode === 'user') await emailService.physicsDeleteUserIds(c, [2]);
+		if (mode === 'account') await emailService.physicsDeleteByAccountId(c, 2);
+		if (mode === 'batch') await emailService.batchDelete(c, { subject: 'Original MIME fixture' });
+		if (mode === 'autoClean') {
+			const settings = await env.kv.get('setting:', 'json');
+			await env.kv.put('setting:', JSON.stringify({ ...settings, autoCleanDays: 1 }));
+			await env.db.prepare("UPDATE email SET create_time='2000-01-01 00:00:00'").run();
+			await emailService.autoClean(c);
+		}
+		expect(await env.kv.get(row.raw_key)).toBeNull();
+	});
+	it('does not accept a mail record when archiving fails and removes archives after failed database inserts', async () => {
+		const put = vi.spyOn(r2Service, 'putObj').mockRejectedValue(new Error('archive unavailable'));
+		try { await expect(receive()).rejects.toThrow('archive unavailable'); } finally { put.mockRestore(); }
+		expect(await env.db.prepare('SELECT count(*) AS n FROM email').first()).toEqual({ n: 1 });
+		await expect(rawEmailService.insert({ env: bindings }, { emailId: 1, userId: 2, accountId: 2 }, sourceBytes)).rejects.toThrow();
+		expect((await env.kv.list({ prefix: 'raw-emails/' })).keys).toEqual([]);
+	});
+	it('stores actual station-internal delivery MIME with correct sender, recipient, body and attachment', async () => {
+		const response = await request('/api/email/send', { token: await session(), body: {
+			accountId: 1, receiveEmail: ['owner@example.test'], subject: 'Internal MIME', text: '内文', content: '<p>内文</p>',
+			attachments: [{ content: btoa('attachment'), filename: 'note.txt', type: 'text/plain' }]
+		} });
+		expect((await response.json()).code).toBe(200);
+		const row = await env.db.prepare('SELECT email_id FROM email WHERE user_id=2 AND raw_key != ? ORDER BY email_id DESC LIMIT 1').bind('').first();
+		const original = await download(row.email_id, await session(2, 'owner@example.test'));
+		const parsed = await PostalMime.parse(await original.arrayBuffer());
+		expect(parsed.from.address).toBe('admin@example.test');
+		expect(parsed.to.map(item => item.address)).toEqual(['owner@example.test']);
+		expect(parsed.text.trim()).toBe('内文');
+		expect(new TextDecoder().decode(parsed.attachments[0].content)).toBe('attachment');
+	});
+	it('reads pinned R2 archives even when the preferred storage type changes', async () => {
+		bindings.r2 = env.archiveBucket;
+		const row = await receive();
+		expect(row.raw_storage).toBe('R2');
+		const type = vi.spyOn(r2Service, 'storageType').mockResolvedValue('KV');
+		try {
+			expect(new Uint8Array(await (await download(row.email_id, await session())).arrayBuffer())).toEqual(sourceBytes);
+			await emailService.physicsDelete({ env: bindings }, { emailIds: String(row.email_id) });
+			expect(await env.archiveBucket.get(row.raw_key)).toBeNull();
+		} finally { type.mockRestore(); }
+	});
+	it('uses the existing S3 backend without exposing a bucket URL', async () => {
+		const settings = await env.kv.get('setting:', 'json');
+		await env.kv.put('setting:', JSON.stringify({ ...settings, bucket: 'fixture-bucket', endpoint: 'https://storage.example.test', s3AccessKey: 'fixture-access', s3SecretKey: 'fixture-secret' }));
+		const objects = new Map();
+		const put = vi.spyOn(s3Service, 'putObj').mockImplementation(async (c, key, bytes) => objects.set(key, bytes));
+		const get = vi.spyOn(s3Service, 'getObj').mockImplementation(async (c, key) => objects.has(key) ? new Response(objects.get(key)) : null);
+		const del = vi.spyOn(s3Service, 'deleteObj').mockImplementation(async (c, keys) => keys.forEach(key => objects.delete(key)));
+		try {
+			const row = await receive();
+			expect(row.raw_storage).toBe('S3');
+			expect(new Uint8Array(await (await download(row.email_id, await session())).arrayBuffer())).toEqual(sourceBytes);
+			await emailService.physicsDelete({ env: bindings }, { emailIds: String(row.email_id) });
+			expect(objects.size).toBe(0);
+		} finally { put.mockRestore(); get.mockRestore(); del.mockRestore(); }
 	});
 });
 

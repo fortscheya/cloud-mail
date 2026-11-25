@@ -9,6 +9,7 @@ export default defineWorkersConfig({
 				miniflare: {
 					compatibilityDate: '2025-06-04',
 					kvNamespaces: ['kv'],
+					r2Buckets: ['archiveBucket'],
 					d1Databases: ['db'],
 				},
 			},

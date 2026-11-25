@@ -34,8 +34,18 @@ const dbInit = {
 		await this.v3_3DB(c);
 		await this.v3_4DB(c);
 		await this.v3_5DB(c);
+		await this.v3_6DB(c);
 		await settingService.refresh(c);
 		return c.text('success');
+	},
+
+	async v3_6DB(c) {
+		const { results } = await c.env.db.prepare('PRAGMA table_info(email)').all();
+		for (const name of ['raw_key', 'raw_storage']) {
+			if (!results.some(column => column.name === name)) {
+				await c.env.db.prepare(`ALTER TABLE email ADD COLUMN ${name} TEXT NOT NULL DEFAULT '';`).run();
+			}
+		}
 	},
 
 	async v3_5DB(c) {

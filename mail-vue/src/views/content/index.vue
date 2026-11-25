@@ -8,6 +8,14 @@
         <Icon class="icon" @click="changeStar" v-else icon="solar:star-line-duotone" width="18.5" height="18.5"/>
       </span>
       <Icon class="icon" v-if="emailStore.contentData.showReply" v-perm="'email:send'"  @click="openForward" icon="iconoir:arrow-up-right" width="20" height="20" />
+      <el-tooltip v-if="email.type === 0" :disabled="!!email.hasRaw" :content="t('rawEmailUnavailable')">
+        <span class="raw-download">
+          <el-button :disabled="!email.hasRaw" :loading="downloadingRaw" @click="downloadRaw">
+            <Icon icon="material-symbols:download" width="16" height="16" />
+            <span>{{ t('downloadOriginal') }}</span>
+          </el-button>
+        </span>
+      </el-tooltip>
       <el-button v-perm="'email:send'" class="reply-button" type="primary" @click="openReply">
         <Icon icon="fluent-mdl2:reply" width="16" height="16" />
         <span>{{ t('replyButton') }}</span>
@@ -89,7 +97,7 @@ import ShadowHtml from '@/components/shadow-html/index.vue'
 import {computed, reactive, ref, watch, onMounted, onUnmounted, nextTick} from "vue";
 import {useRouter} from 'vue-router'
 import {ElMessage, ElMessageBox} from 'element-plus'
-import {emailDelete, emailRead} from "@/request/email.js";
+import {emailDelete, emailRead, emailRaw} from "@/request/email.js";
 import {Icon} from "@iconify/vue";
 import {useEmailStore} from "@/store/email.js";
 import {useAccountStore} from "@/store/account.js";
@@ -111,6 +119,26 @@ const uiStore = useUiStore();
 const settingStore = useSettingStore();
 const accountStore = useAccountStore();
 const emailStore = useEmailStore();
+const downloadingRaw = ref(false)
+
+async function downloadRaw() {
+  if (downloadingRaw.value || !email.value.hasRaw) return
+  const emailId = email.value.emailId
+  downloadingRaw.value = true
+  try {
+    const blob = await emailRaw(emailId)
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `email-${emailId}.eml`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch {
+    // The API interceptor displays authentication and download failures.
+  } finally {
+    downloadingRaw.value = false
+  }
+}
 const userStore = useUserStore();
 const canDelete = computed(() => emailStore.contentData.delType === 'physics' || email.value?.userId === userStore.user.userId)
 const router = useRouter()
@@ -337,19 +365,28 @@ const handleDelete = () => {
 .box {
   height: 100%;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .header-actions {
-  .reply-button {
-    margin-left: auto;
-    gap: 6px;
-  }
   padding: 9px 15px 9px;
   display: flex;
   align-items: center;
   gap: 20px;
   box-shadow: var(--header-actions-border);
   font-size: 18px;
+  .raw-download .el-button {
+    gap: 6px;
+  }
+  .reply-button {
+    margin-left: auto;
+    gap: 6px;
+  }
+  @media (max-width: 450px) {
+    gap: 10px;
+    flex-wrap: wrap;
+  }
   .star {
     display: flex;
     align-items: center;
@@ -363,7 +400,9 @@ const handleDelete = () => {
 
 
 .scrollbar {
-  height: calc(100% - 38px);
+  flex: 1;
+  min-height: 0;
+  height: auto;
   width: 100%;
 }
 
