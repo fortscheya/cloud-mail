@@ -26,7 +26,7 @@ const zh = {
 	rawEmailUnavailable: '这封邮件没有已保存的原文，无法下载',
 	noResendToken: 'Resend未配置，只能给站内邮箱发件',
 	noSendProvider: '发信服务未配置，只能给站内邮箱发件',
-	resendConfigInvalid: 'Resend 发信暂不可用：请将 Cloudflare 的 RESEND_TOKENS Secret 配置为域名到发送密钥的 JSON 对象',
+	resendConfigInvalid: 'Resend 发信暂不可用：请在 Cloudflare 配置所有本站域名共用的 RESEND_TOKEN 密钥，或修正 RESEND_TOKENS 域名密钥 JSON 对象',
 	sendEmailNotCurUser: '发件人邮箱非当前用户所有',
 	notExistEmailReply: '邮件不存在无法回复',
 	imageAttLimit: '图片不能超过10个',

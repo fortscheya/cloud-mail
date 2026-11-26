@@ -80,6 +80,29 @@ INSERT INTO email(email_id,user_id,account_id,resend_email_id,status) VALUES(1,2
 });
 
 describe('Resend configuration availability', () => {
+	it('uses a shared Secret before legacy mappings and never returns or caches its value', async () => {
+		bindings.RESEND_TOKEN = '  re_shared_test_only_key_1234567890\n';
+		bindings.RESEND_TOKENS = 'invalid-stale-mapping';
+		expect(settingService.resendToken({ env: bindings }, 'example.test')).toBe('re_shared_test_only_key_1234567890');
+		expect(settingService.resendToken({ env: bindings }, 'second.test')).toBe('re_shared_test_only_key_1234567890');
+		const body = await (await request('/api/setting/query', { token: await session() })).json();
+		expect(body.data.resendConfigStatus).toBe('configured');
+		expect(body.data.resendTokens).toEqual({ '*': '******' });
+		expect(JSON.stringify(body)).not.toContain('re_shared');
+		const publicBody = await (await request('/api/setting/websiteConfig')).json();
+		expect(publicBody.data).not.toHaveProperty('resendTokens');
+		expect(JSON.stringify(publicBody)).not.toContain('re_shared');
+		const columns = getTableConfig(settingSchema).columns.map(column =>
+			`"${column.name}" ${column.getSQLType()} DEFAULT ${column.dataType === 'number' ? '0' : "''"}`);
+		await env.db.exec(`CREATE TABLE setting (${columns.join(',')}); INSERT INTO setting(title) VALUES('before');`);
+		expect((await request('/api/setting/set', { token: await session(), method: 'PUT', body: { title: 'after' } })).status).toBe(200);
+		const cache = await env.kv.get('setting:', 'json');
+		expect(cache.title).toBe('after');
+		expect(cache.resendTokens).toEqual({});
+		expect(JSON.stringify(cache)).not.toContain('re_shared');
+		delete bindings.RESEND_TOKEN;
+		expect(() => settingService.resendToken({ env: bindings }, 'second.test')).toThrow('RESEND_TOKENS');
+	});
 	const invalidValues = [
 		'plain-api-key-fixture',
 		'```json\n{"example.test":"fixture"}\n```',
@@ -140,6 +163,7 @@ describe('Resend configuration availability', () => {
 		bindings.RESEND_TOKENS = 'plain-api-key-fixture';
 		expect(() => settingService.resendToken({ env: bindings }, 'example.test')).toThrow('RESEND_TOKENS');
 		bindings.RESEND_TOKENS = '\uFEFF  ' + JSON.stringify({ 'example.test': 'new-test-only-fixture' }) + '\n';
+		bindings.RESEND_TOKEN = '  \n';
 		expect(settingService.resendToken({ env: bindings }, 'example.test')).toBe('new-test-only-fixture');
 		const response = await request('/api/setting/query', { token: await session() });
 		const body = await response.json();
@@ -411,6 +435,33 @@ INSERT INTO email(email_id,user_id,account_id,send_email,name,subject,text,type)
 			const response = await request('/api/email/send', { token: await session(), body: form({ name: 'Notice' }) });
 			expect((await response.json()).data[0]).toMatchObject({ sendEmail: 'unregistered@example.test', userId: 1, accountId: 1 });
 			expect(JSON.parse(fetch.mock.calls[0][1].body).from).toBe('Notice <unregistered@example.test>');
+			expect(await env.db.prepare('SELECT count(*) AS n FROM account').first()).toEqual({ n: 2 });
+		} finally { fetch.mockRestore(); }
+	});
+	it('lists every site domain and sends from each with the same shared Resend key', async () => {
+		bindings.domain = ['example.test', 'second.test'];
+		bindings.RESEND_TOKEN = 're_shared_test_only_key_1234567890';
+		const token = await session();
+		const domainsResponse = await request('/api/email/senderDomains', { token });
+		expect(domainsResponse.status).toBe(200);
+		expect((await domainsResponse.json()).data).toEqual(bindings.domain);
+		const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+			new Response(JSON.stringify({ id: 'resend-shared' }), { headers: { 'Content-Type': 'application/json' } }));
+		try {
+			for (const domain of bindings.domain) {
+				const response = await request('/api/email/send', { token, body: form({ fromEmail: 'notice@' + domain, name: 'Notice' }) });
+				expect(response.status).toBe(200);
+				expect((await response.json()).data[0]).toMatchObject({ sendEmail: 'notice@' + domain, userId: 1, accountId: 1 });
+			}
+			expect(fetch).toHaveBeenCalledTimes(2);
+			for (let index = 0; index < bindings.domain.length; index++) {
+				const init = fetch.mock.calls[index][1];
+				expect(new Headers(init.headers).get('authorization')).toBe('Bearer re_shared_test_only_key_1234567890');
+				expect(JSON.parse(init.body).from).toBe('Notice <notice@' + bindings.domain[index] + '>');
+			}
+			expect((await request('/api/email/send', { token, body: form({ fromEmail: 'notice@unconfigured.test' }) })).status).toBe(403);
+			expect((await request('/api/email/send', { token: await session(2, 'member@example.test'), body: form({ accountId: 2 }) })).status).toBe(403);
+			expect(fetch).toHaveBeenCalledTimes(2);
 			expect(await env.db.prepare('SELECT count(*) AS n FROM account').first()).toEqual({ n: 2 });
 		} finally { fetch.mockRestore(); }
 	});

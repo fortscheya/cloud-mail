@@ -12,6 +12,11 @@ import userContext from '../security/user-context';
 import domainUtils from '../utils/domain-uitls';
 
 function resendSecrets(c) {
+	// One All Domains key serves every configured site domain. Prefer it to
+	// obsolete per-domain mappings, including malformed mappings left in place.
+	const shared = c.env.RESEND_TOKEN;
+	if (shared != null && typeof shared !== 'string') return { status: 'invalid', tokens: {} };
+	if (shared?.trim()) return { status: 'configured', tokens: { '*': shared.trim() } };
 	const raw = c.env.RESEND_TOKENS;
 	if (!raw) return { status: 'missing', tokens: {} };
 	try {
@@ -30,7 +35,7 @@ const settingService = {
 	resendToken(c, domain) {
 		const config = resendSecrets(c);
 		if (config.status === 'invalid') throw new BizError(t('resendConfigInvalid'), 503);
-		return config.tokens[domain];
+		return config.tokens[domain] || config.tokens['*'];
 	},
 
 	async refresh(c) {
@@ -109,7 +114,7 @@ const settingService = {
 		settingRow.secretKey = settingRow.secretKey ? `${settingRow.secretKey.slice(0, 6)}******` : null;
 
 		Object.keys(settingRow.resendTokens).forEach(key => {
-			settingRow.resendTokens[key] = `${settingRow.resendTokens[key].slice(0, 12)}******`;
+			settingRow.resendTokens[key] = '******';
 		});
 
 		settingRow.s3AccessKey = settingRow.s3AccessKey ? `${settingRow.s3AccessKey.slice(0, 12)}******` : null;
@@ -143,7 +148,7 @@ const settingService = {
 		const { resendConfigStatus, ...editable } = params;
 		params = editable;
 		if (params.resendTokens !== undefined) {
-			throw new BizError('Manage sending keys using the RESEND_TOKENS Secret in Cloudflare Workers settings', 400);
+			throw new BizError('Manage sending keys using the RESEND_TOKEN or RESEND_TOKENS Secret in Cloudflare Workers settings', 400);
 		}
 
 		if (Array.isArray(params.emailPrefixFilter)) {

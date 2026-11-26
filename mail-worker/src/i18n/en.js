@@ -26,7 +26,7 @@ const en = {
 	rawEmailUnavailable: 'No original message was saved for this email',
 	noResendToken: 'Resend API token not configured',
 	noSendProvider: 'Email sending service is not configured',
-	resendConfigInvalid: 'Resend sending is unavailable: configure the RESEND_TOKENS Worker Secret as a JSON object mapping domains to sending keys',
+	resendConfigInvalid: 'Resend sending is unavailable: configure a shared RESEND_TOKEN Worker Secret, or correct the RESEND_TOKENS JSON map of domains to sending keys',
 	sendEmailNotCurUser: 'Sender email does not belong to current user',
 	notExistEmailReply: 'Mail does not exist and cannot be replied to',
 	imageAttLimit: 'The maximum number of image attachments is 10',
