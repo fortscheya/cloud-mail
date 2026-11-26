@@ -99,7 +99,7 @@ const en = {
     useCurrentSender: 'Use current mailbox',
     senderPrefix: 'Email prefix',
     senderDomain: 'Sending domain',
-    senderDisplayName: 'Sender name (optional)',
+    senderDisplayName: 'Display name (defaults to sender address)',
     customSenderHint: 'No mailbox registration needed. Sent mail is saved in the administrator’s primary mailbox.',
     noSenderDomains: 'No sending domains available. Check the email provider configuration.',
     invalidSenderAddress: 'Enter a valid sender email address.',

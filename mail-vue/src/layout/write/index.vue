@@ -7,8 +7,8 @@
             <Icon icon="hugeicons:quill-write-01" width="28" height="28"/>
           </span>
           <span class="sender">{{ $t('sender') }}:</span>
-          <span class="sender-name">{{ form.name }}</span>
-          <span class="send-email"><{{ senderAddress }}></span>
+          <span class="sender-name" :title="senderName">{{ senderName }}</span>
+          <span class="send-email" :title="senderAddress"><{{ senderAddress }}></span>
           <el-button v-if="isAdmin" link type="primary" @click="toggleCustomSender">
             {{ t(form.customSender ? 'useCurrentSender' : 'customSender') }}
           </el-button>
@@ -137,7 +137,7 @@ import dayjs from "dayjs";
 import {useI18n} from "vue-i18n";
 import router from "@/router/index.js";
 import {ElMessageBox} from "element-plus";
-import {getReplyRecipients} from '../../../../shared/mail-addresses.js';
+import {getReplyRecipients, getReplySender} from '../../../../shared/mail-addresses.js';
 
 defineExpose({
   open,
@@ -193,6 +193,7 @@ const loadingSenderDomains = ref(false)
 const senderDomainsError = ref('')
 const senderAddress = computed(() => isAdmin.value && form.customSender
   ? `${form.senderPrefix.trim()}@${form.senderDomain}` : form.sendEmail)
+const senderName = computed(() => (typeof form.name === 'string' ? form.name.trim() : '') || senderAddress.value)
 
 async function loadSenderDomains() {
   loadingSenderDomains.value = true
@@ -215,7 +216,12 @@ function toggleCustomSender() {
   form.customSender = !form.customSender
   if (form.customSender) {
     if (!form.senderPrefix) form.senderPrefix = form.sendEmail.split('@')[0]
+    // A temporary sender must not inherit the administrator account's name.
+    form.name = ''
     loadSenderDomains()
+  } else {
+    form.name = accountStore.currentAccount.email
+      ? accountStore.currentAccount.name || '' : userStore.user.name || ''
   }
 }
 
@@ -425,6 +431,7 @@ async function sendEmail() {
   show.value = false
 
   const sendForm = {...toRaw(form)}
+  sendForm.name = senderName.value
   if (isAdmin.value && form.customSender) sendForm.fromEmail = senderAddress.value
   emailSend(sendForm, (e) => {
     percent.value = Math.round((e.loaded * 98) / e.total)
@@ -561,7 +568,7 @@ function openReply(email) {
 
   email.subject = email.subject || ''
 
-  const ownSent = email.type === 1 && email.userId === userStore.user.userId
+  const replyFrom = getReplySender(email, userStore.user.userId)
   form.receiveEmail.push(...recipients)
   form.subject = (
       email.subject.startsWith('Re:') ||
@@ -587,14 +594,19 @@ function openReply(email) {
     </blockquote>`
     open()
 
-    if (isAdmin.value && email.userId === userStore.user.userId) {
-      const replyFrom = ownSent ? email.sendEmail : email.toEmail
-      if (replyFrom && replyFrom !== form.sendEmail) {
-        const [prefix, domain] = replyFrom.split('@')
+    if (replyFrom && replyFrom.address !== form.sendEmail) {
+      if (isAdmin.value) {
+        const [prefix, domain] = replyFrom.address.split('@')
         form.customSender = true
         form.senderPrefix = prefix
         form.senderDomain = domain.toLowerCase()
+        form.name = replyFrom.name
         loadSenderDomains()
+      } else if (email.userId === userStore.user.userId && email.accountId > 0) {
+        // The server continues to validate account ownership before sending.
+        form.accountId = email.accountId
+        form.sendEmail = replyFrom.address
+        form.name = replyFrom.name
       }
     }
 
@@ -619,11 +631,11 @@ function open() {
   if (!accountStore.currentAccount.email) {
     form.sendEmail = userStore.user.email;
     form.accountId = userStore.user.account.accountId;
-    form.name = userStore.user.name;
+    form.name = userStore.user.name || '';
   } else {
     form.sendEmail = accountStore.currentAccount.email;
     form.accountId = accountStore.currentAccount.accountId;
-    form.name = accountStore.currentAccount.name;
+    form.name = accountStore.currentAccount.name || '';
   }
   show.value = true;
   editor.value.focus()
@@ -803,6 +815,10 @@ function close() {
       .sender-name {
         margin-left: 8px;
         font-weight: bold;
+        max-width: min(32vw, 280px);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .send-email {

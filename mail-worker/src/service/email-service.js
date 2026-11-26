@@ -466,8 +466,9 @@ const emailService = {
 		}
 
 		//没有发件人名字自动截取
+		name = typeof name === 'string' ? name.trim() : '';
 		if (!name) {
-			name = emailUtils.getName(senderEmail);
+			name = customSender ? senderEmail : emailUtils.getName(senderEmail);
 		}
 
 		let emailRow = {
@@ -690,7 +691,7 @@ const emailService = {
 	async sendBatchByResend(resendToken, params) {
 		const resend = new Resend(resendToken);
 		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
+			from: params.name === params.accountEmail ? params.accountEmail : `${params.name} <${params.accountEmail}>`,
 			subject: params.subject,
 			text: params.text,
 			html: params.html
@@ -746,7 +747,7 @@ const emailService = {
 		const resend = new Resend(resendToken);
 
 		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
+			from: params.name === params.accountEmail ? params.accountEmail : `${params.name} <${params.accountEmail}>`,
 			to: [...params.receiveEmail],
 			subject: params.subject,
 			text: params.text,

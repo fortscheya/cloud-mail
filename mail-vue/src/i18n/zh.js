@@ -99,7 +99,7 @@ const zh = {
     useCurrentSender: '使用当前邮箱',
     senderPrefix: '邮箱前缀',
     senderDomain: '发信域名',
-    senderDisplayName: '发件人名称（可选）',
+    senderDisplayName: '显示名称（默认使用发件地址）',
     customSenderHint: '无需注册此邮箱，发件记录保存在管理员主邮箱。',
     noSenderDomains: '暂无可用发信域名，请检查发信服务配置。',
     invalidSenderAddress: '请输入合法的发件邮箱地址。',

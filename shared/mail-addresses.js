@@ -52,3 +52,9 @@ export function getReplyRecipients(email, userId) {
     const targets = replyTo.length ? replyTo : normalizeMailboxes([{ address: email.sendEmail }]);
     return targets.map(item => item.address);
 }
+
+export function getReplySender(email, userId) {
+    const ownSent = email.type === 1 && email.userId === userId;
+    return normalizeMailboxes([{ address: ownSent ? email.sendEmail : email.toEmail,
+        name: ownSent ? email.name : email.toName }])[0] || null;
+}

@@ -18,7 +18,7 @@ import r2Service from '../src/service/r2-service';
 import s3Service from '../src/service/s3-service';
 import emailService from '../src/service/email-service';
 import PostalMime from 'postal-mime';
-import { getReplyRecipients, normalizeMailboxes } from '../../shared/mail-addresses.js';
+import { getReplyRecipients, getReplySender, normalizeMailboxes } from '../../shared/mail-addresses.js';
 
 const password = 'test-only-Strong-Password-47';
 const key = 'attachments/' + 'a'.repeat(32) + '.png';
@@ -328,6 +328,16 @@ INSERT INTO role_perm(id,role_id,perm_id) VALUES(1,1,1),(2,1,2);
 });
 
 describe('Reply-To preservation and reply recipients', () => {
+	it('uses the original receiving address as reply sender, including unregistered and other-member mail', () => {
+		for (const userId of [0, 1, 2]) {
+			const email = { type: 0, userId, toEmail: 'Mary@EXAMPLE.test', toName: 'Mary', sendEmail: 'desk@other.test', replyTo: '[{"address":"ticket@reply.test"}]' };
+			expect(getReplySender(email, 1)).toEqual({ address: 'Mary@example.test', name: 'Mary' });
+			expect(getReplyRecipients(email, 1)).toEqual(['ticket@reply.test']);
+		}
+		expect(getReplySender({ type: 1, userId: 1, sendEmail: 'notice@example.test', name: 'Notice', toEmail: 'outside@other.test' }, 1))
+			.toEqual({ address: 'notice@example.test', name: 'Notice' });
+		expect(getReplySender({ type: 0, toEmail: 'bad\r\nBcc:outside@other.test' }, 1)).toBeNull();
+	});
 	beforeEach(async () => {
 		await env.db.exec(`
 INSERT INTO user(user_id,email,password,salt) VALUES(1,'admin@example.test','unused','unused');
@@ -444,6 +454,21 @@ INSERT INTO email(email_id,user_id,account_id,send_email,name,subject,text,type)
 			expect((await response.json()).data[0]).toMatchObject({ sendEmail: 'unregistered@example.test', userId: 1, accountId: 1 });
 			expect(JSON.parse(fetch.mock.calls[0][1].body).from).toBe('Notice <unregistered@example.test>');
 			expect(await env.db.prepare('SELECT count(*) AS n FROM account').first()).toEqual({ n: 2 });
+		} finally { fetch.mockRestore(); }
+	});
+	it.each(['together', 'divide'])('defaults a custom sender to its address without the administrator display name (%s)', async manyType => {
+		bindings.RESEND_TOKEN = 're_shared_test_only_key_1234567890';
+		const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(
+			manyType === 'divide' ? { data: [{ id: 'resend-identity' }] } : { id: 'resend-identity' }
+		), { headers: { 'Content-Type': 'application/json' } }));
+		try {
+			const response = await request('/api/email/send', { token: await session(), body: form({ manyType, name: '  ' }) });
+			expect(response.status).toBe(200);
+			const result = (await response.json()).data;
+			const emails = Array.isArray(result) ? result : result.emails;
+			expect(emails[0]).toMatchObject({ name: 'unregistered@example.test', sendEmail: 'unregistered@example.test' });
+			const payload = JSON.parse(fetch.mock.calls[0][1].body);
+			expect((Array.isArray(payload) ? payload[0] : payload).from).toBe('unregistered@example.test');
 		} finally { fetch.mockRestore(); }
 	});
 	it('lists every site domain and sends from each with the same shared Resend key', async () => {
