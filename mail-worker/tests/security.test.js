@@ -80,6 +80,14 @@ INSERT INTO email(email_id,user_id,account_id,resend_email_id,status) VALUES(1,2
 });
 
 describe('Resend configuration availability', () => {
+	it.each(['re_invalid\nembedded', 're_密钥', 'Bearer re_example'])('rejects invalid shared header characters before a provider request %#', async raw => {
+		bindings.RESEND_TOKEN = raw;
+		const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			expect(() => settingService.resendToken({ env: bindings }, 'example.test')).toThrow('RESEND_TOKEN');
+			expect(JSON.stringify(log.mock.calls)).not.toContain(raw);
+		} finally { log.mockRestore(); }
+	});
 	it('uses a shared Secret before legacy mappings and never returns or caches its value', async () => {
 		bindings.RESEND_TOKEN = '  re_shared_test_only_key_1234567890\n';
 		bindings.RESEND_TOKENS = 'invalid-stale-mapping';
@@ -465,6 +473,16 @@ INSERT INTO email(email_id,user_id,account_id,send_email,name,subject,text,type)
 			expect(await env.db.prepare('SELECT count(*) AS n FROM account').first()).toEqual({ n: 2 });
 		} finally { fetch.mockRestore(); }
 	});
+	it('saves a shared-key reply when the administrator has the production daily-quota role', async () => {
+		bindings.RESEND_TOKEN = 're_shared_test_only_key_1234567890';
+		await env.db.exec("UPDATE role SET send_count=10,send_type='day' WHERE role_id=1; UPDATE email SET message_id='<original@sender.test>' WHERE email_id=1;");
+		const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ id: 'resend-reply' }), { headers: { 'Content-Type': 'application/json' } }));
+		try {
+			const response = await request('/api/email/send', { token: await session(), body: form({ sendType: 'reply', emailId: 1 }) });
+			expect(response.status).toBe(200);
+			expect((await response.json()).data[0]).toMatchObject({ inReplyTo: '<original@sender.test>', resendEmailId: 'resend-reply' });
+		} finally { fetch.mockRestore(); }
+	});
 	it('rejects member custom senders even with a valid owned account', async () => {
 		bindings.email = { send: vi.fn() };
 		const response = await request('/api/email/send', { token: await session(2, 'member@example.test'), body: form({ accountId: 2 }) });
@@ -674,8 +692,15 @@ describe('Resend webhook trust boundary', () => {
 		expect((await request('/api/webhooks', { body: { padding: 'x'.repeat(65536) } })).status).toBe(413);
 	});
 	it('never reflects internal SQL or provider errors', async () => {
-		const response = await request('/api/login-diagnostic-fixture', { token: await session() });
-		expect(response.status).toBe(500);
-		expect(await response.text()).not.toMatch(/SQLITE|bindings|sensitive/);
+		const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			const response = await request('/api/login-diagnostic-fixture', { token: await session() });
+			expect(response.status).toBe(500);
+			expect(await response.text()).not.toMatch(/SQLITE|bindings|sensitive/);
+			expect(log.mock.calls[0][0]).toBe('Unhandled application error');
+			expect(log.mock.calls[0][2].locations.length).toBeGreaterThan(0);
+			expect(log.mock.calls[0][2].locations.every(location => /^[\w-]+\.(?:m?js|ts):\d+:\d+$/.test(location))).toBe(true);
+			expect(JSON.stringify(log.mock.calls)).not.toMatch(/SQLITE|sensitive|bindings|Users\/|https?:/);
+		} finally { log.mockRestore(); }
 	});
 });

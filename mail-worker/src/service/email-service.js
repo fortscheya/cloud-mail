@@ -354,6 +354,7 @@ const emailService = {
 
 	// 发送入口：公共校验、参数准备、渠道选择和结果汇总。
 	async send(c, params, userId) {
+		c.set?.('mailSendStage', 'prepare');
 		let {
 			accountId, //发送账号id
 			name, //发件人名字
@@ -603,6 +604,7 @@ const emailService = {
 		}
 		let result;
 		try {
+			c.set?.('mailSendStage', 'resend-request');
 			result = separate
 				? await this.sendBatchByResend(resendToken, sendParams)
 				: await this.sendByResend(resendToken, sendParams);
@@ -622,6 +624,7 @@ const emailService = {
 			}))
 			: [{ receiveEmail: sendParams.receiveEmail, id: result.data?.id }];
 		const emails = [];
+		c.set?.('mailSendStage', 'persist-after-resend-acceptance');
 		for (const item of items) {
 			emails.push(await this.saveSentEmail(c, {
 				...saveParams, receiveEmail: item.receiveEmail, providerId: item.id

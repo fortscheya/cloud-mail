@@ -16,7 +16,14 @@ function resendSecrets(c) {
 	// obsolete per-domain mappings, including malformed mappings left in place.
 	const shared = c.env.RESEND_TOKEN;
 	if (shared != null && typeof shared !== 'string') return { status: 'invalid', tokens: {} };
-	if (shared?.trim()) return { status: 'configured', tokens: { '*': shared.trim() } };
+	if (shared?.trim()) {
+		const token = shared.trim();
+		if (/[^\x21-\x7e]/.test(token)) {
+			console.warn('Invalid Resend configuration', { secret: 'RESEND_TOKEN', reason: 'invalid_header_characters' });
+			return { status: 'invalid', tokens: {} };
+		}
+		return { status: 'configured', tokens: { '*': token } };
+	}
 	const raw = c.env.RESEND_TOKENS;
 	if (!raw) return { status: 'missing', tokens: {} };
 	try {
